@@ -1,0 +1,12 @@
+{
+  "name": "telecomando-slide",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telecomando Bluetooth per PowerPoint su Mac, con le note del relatore sul telefono.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:mac": "./mac/run_tests.sh",
+    "build:mac": "./mac/build.sh"
+  }
+}

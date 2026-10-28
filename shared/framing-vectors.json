@@ -1,0 +1,58 @@
+[
+  {
+    "name": "vuoto",
+    "messageId": 7,
+    "maxFrameSize": 20,
+    "payload": "",
+    "frames": [
+      "0700000001"
+    ]
+  },
+  {
+    "name": "corto",
+    "messageId": 1,
+    "maxFrameSize": 20,
+    "payload": "ciao",
+    "frames": [
+      "01000000016369616f"
+    ]
+  },
+  {
+    "name": "tre frame",
+    "messageId": 255,
+    "maxFrameSize": 20,
+    "payload": "0123456789012345678901234567890123456789",
+    "frames": [
+      "ff00000003303132333435363738393031323334",
+      "ff00010003353637383930313233343536373839",
+      "ff0002000330313233343536373839"
+    ]
+  },
+  {
+    "name": "utf8 spezzato",
+    "messageId": 42,
+    "maxFrameSize": 8,
+    "payload": "Nota àèìòù — fine",
+    "frames": [
+      "2a000000084e6f74",
+      "2a000100086120c3",
+      "2a00020008a0c3a8",
+      "2a00030008c3acc3",
+      "2a00040008b2c3b9",
+      "2a0005000820e280",
+      "2a00060008942066",
+      "2a00070008696e65"
+    ]
+  },
+  {
+    "name": "json grande",
+    "messageId": 9,
+    "maxFrameSize": 23,
+    "payload": "{\"t\": \"state\", \"slide\": 3, \"count\": 12}",
+    "frames": [
+      "09000000037b2274223a20227374617465222c2022736c",
+      "0900010003696465223a20332c2022636f756e74223a20",
+      "090002000331327d"
+    ]
+  }
+]

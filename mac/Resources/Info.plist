@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>it</string>
+	<key>CFBundleDisplayName</key>
+	<string>Telecomando Slide</string>
+	<key>CFBundleName</key>
+	<string>Telecomando Slide</string>
+	<key>CFBundleExecutable</key>
+	<string>TelecomandoSlide</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.azini.telecomandoslide</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Uso personale. Sorgente in chiaro: github.com/azini-oss/telecomando-slide</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Serve per collegare il telefono che fa da telecomando per le slide.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Serve per cambiare slide in PowerPoint e leggere le note del relatore da mostrare sul telefono.</string>
+</dict>
+</plist>
