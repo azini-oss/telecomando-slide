@@ -6,6 +6,10 @@ enum BridgeError: Error, Equatable {
     case notRunning
     case noSlideShow
     case noPresentation
+    case invalidSlide
+    case hiddenSlide
+    case endOfShow
+    case jumpFailed
     case timeout
     case script(String)
 
@@ -16,21 +20,34 @@ enum BridgeError: Error, Equatable {
         case .notRunning: return "PowerPoint non è aperto"
         case .noSlideShow: return "La presentazione non è avviata"
         case .noPresentation: return "Nessuna presentazione aperta in PowerPoint"
+        case .invalidSlide: return "Questa slide non esiste"
+        case .hiddenSlide: return "La slide è nascosta: in presentazione non ci si può andare"
+        case .endOfShow: return "Raggiunta la fine della presentazione"
+        case .jumpFailed: return "Salto alla slide non riuscito"
         case .timeout: return "PowerPoint non risponde"
         case .script(let message): return "Errore PowerPoint: \(message)"
         }
     }
 }
 
+/// Cosa serve al Controller da PowerPoint (sostituibile con un finto nei test).
+protocol PresentationBridge: AnyObject {
+    func readState() -> Result<PresentationState, BridgeError>
+    func readDeckInfo() -> Result<DeckInfo, BridgeError>
+    func readSlides(from: Int, to: Int) -> Result<(key: String, slides: [SlideInfo]), BridgeError>
+    func perform(_ command: Command) -> Result<Void, BridgeError>
+    func step(toward slide: Int, maxSteps: Int) -> Result<JumpProgress, BridgeError>
+}
+
 /// Legge lo stato e comanda PowerPoint tramite AppleScript eseguito in-process.
-/// Va usato solo dal main thread (NSAppleScript non è thread-safe).
-final class PowerPointBridge {
+/// Va usato solo dal main thread (NSAppleScript non è thread-safe); ogni chiamata è breve.
+final class PowerPointBridge: PresentationBridge {
     static let bundleID = "com.microsoft.Powerpoint"
 
     private let log = Logger(subsystem: AppInfo.subsystem, category: "powerpoint")
     private var compiled: NSAppleScript?
 
-    /// Controllato prima di ogni comando: un Apple Event verso un'app chiusa la aprirebbe.
+    /// Controllato prima di ogni chiamata: un Apple Event verso un'app chiusa la riaprirebbe.
     var isRunning: Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleID).isEmpty
     }
@@ -40,30 +57,53 @@ final class PowerPointBridge {
         return call("readstate").flatMap(Self.parseState)
     }
 
-    func readDeck() -> Result<Deck, BridgeError> {
+    func readDeckInfo() -> Result<DeckInfo, BridgeError> {
         guard isRunning else { return .failure(.notRunning) }
-        return call("readdeck").flatMap(Self.parseDeck)
+        return call("deckinfo").flatMap { d in
+            guard d.numberOfItems == 3 else { return .failure(.script("presentazione inattesa")) }
+            return .success(DeckInfo(
+                name: d.atIndex(1)?.stringValue ?? "",
+                key: d.atIndex(2)?.stringValue ?? "",
+                count: Int(d.atIndex(3)?.int32Value ?? 0)
+            ))
+        }
+    }
+
+    func readSlides(from: Int, to: Int) -> Result<(key: String, slides: [SlideInfo]), BridgeError> {
+        guard isRunning else { return .failure(.notRunning) }
+        return call("readslides", [Self.int(from), Self.int(to)]).flatMap(Self.parseSlides)
     }
 
     func perform(_ command: Command) -> Result<Void, BridgeError> {
-        guard let (handler, arguments) = Self.handler(for: command) else { return .success(()) }
+        guard let handler = Self.handler(for: command) else { return .success(()) }
         guard isRunning else { return .failure(.notRunning) }
-        return call(handler, arguments).map { _ in () }
+        return call(handler).map { _ in () }
+    }
+
+    func step(toward slide: Int, maxSteps: Int) -> Result<JumpProgress, BridgeError> {
+        guard isRunning else { return .failure(.notRunning) }
+        return call("steptoward", [Self.int(slide), Self.int(maxSteps)]).flatMap { d in
+            guard d.numberOfItems == 2 else { return .failure(.script("risposta inattesa al salto")) }
+            return .success(JumpProgress(slide: Int(d.atIndex(1)?.int32Value ?? 0), done: d.atIndex(2)?.booleanValue ?? false))
+        }
     }
 
     // MARK: - Esecuzione
 
-    private static func handler(for command: Command) -> (String, [NSAppleEventDescriptor])? {
+    private static func handler(for command: Command) -> String? {
         switch command {
-        case .next: return ("gonext", [])
-        case .previous: return ("goprev", [])
-        case .first: return ("gofirst", [])
-        case .goTo(let slide): return ("goslide", [NSAppleEventDescriptor(int32: Int32(slide))])
-        case .start: return ("startshow", [])
-        case .stop: return ("endshow", [])
-        case .black: return ("toggleblack", [])
-        case .hello, .reload: return nil
+        case .next: return "gonext"
+        case .previous: return "goprev"
+        case .first: return "gofirst"
+        case .start: return "startshow"
+        case .stop: return "endshow"
+        case .black: return "toggleblack"
+        case .hello, .resume, .reload, .goTo: return nil
         }
+    }
+
+    private static func int(_ value: Int) -> NSAppleEventDescriptor {
+        NSAppleEventDescriptor(int32: Int32(clamping: value))
     }
 
     private func script() -> Result<NSAppleScript, BridgeError> {
@@ -118,10 +158,14 @@ final class PowerPointBridge {
         let message = error[NSAppleScript.errorMessage] as? String ?? "sconosciuto"
         switch code {
         case -1743, -10004: return .notPermitted
-        case -600, -609: return .notRunning
+        case -600, -609, 1004: return .notRunning
         case -1712: return .timeout
         case 1001: return .noSlideShow
+        case 1002: return .invalidSlide
         case 1003: return .noPresentation
+        case 1005: return .hiddenSlide
+        case 1006: return .endOfShow
+        case 1007: return .jumpFailed
         default: return .script(message)
         }
     }
@@ -129,30 +173,31 @@ final class PowerPointBridge {
     // MARK: - Lettura risultati
 
     private static func parseState(_ d: NSAppleEventDescriptor) -> Result<PresentationState, BridgeError> {
-        guard d.numberOfItems == 6 else { return .failure(.script("stato inatteso")) }
-        let state = PresentationState(
+        guard d.numberOfItems == 7 else { return .failure(.script("stato inatteso")) }
+        return .success(PresentationState(
             ppt: true,
             running: d.atIndex(1)?.booleanValue ?? false,
             slide: Int(d.atIndex(2)?.int32Value ?? 0),
             count: Int(d.atIndex(3)?.int32Value ?? 0),
             black: d.atIndex(4)?.booleanValue ?? false,
             elapsed: d.atIndex(5)?.doubleValue ?? 0,
-            key: d.atIndex(6)?.stringValue ?? ""
-        )
-        return .success(state)
+            key: d.atIndex(6)?.stringValue ?? "",
+            slideID: Int(d.atIndex(7)?.int32Value ?? 0)
+        ))
     }
 
-    private static func parseDeck(_ d: NSAppleEventDescriptor) -> Result<Deck, BridgeError> {
-        guard d.numberOfItems == 3, let list = d.atIndex(3) else { return .failure(.script("elenco slide inatteso")) }
+    private static func parseSlides(_ d: NSAppleEventDescriptor) -> Result<(key: String, slides: [SlideInfo]), BridgeError> {
+        guard d.numberOfItems == 2, let list = d.atIndex(2) else { return .failure(.script("elenco slide inatteso")) }
         let slides = list.numberOfItems < 1 ? [] : (1...list.numberOfItems).compactMap { index -> SlideInfo? in
-            guard let item = list.atIndex(index), item.numberOfItems == 3 else { return nil }
+            guard let item = list.atIndex(index), item.numberOfItems == 4 else { return nil }
             return SlideInfo(
                 title: TextCleanup.normalize(item.atIndex(1)?.stringValue ?? ""),
                 notes: TextCleanup.normalize(item.atIndex(2)?.stringValue ?? ""),
-                hidden: item.atIndex(3)?.booleanValue ?? false
+                hidden: item.atIndex(3)?.booleanValue ?? false,
+                id: Int(item.atIndex(4)?.int32Value ?? 0)
             )
         }
-        return .success(Deck(key: d.atIndex(2)?.stringValue ?? "", name: d.atIndex(1)?.stringValue ?? "", slides: slides))
+        return .success((key: d.atIndex(1)?.stringValue ?? "", slides: slides))
     }
 }
 

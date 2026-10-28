@@ -66,14 +66,29 @@ check(afterWrong.verify("4821", at: start.addingTimeInterval(10)).result == .loc
       "dopo 3 errori blocca anche il PIN giusto")
 check(afterWrong.verify("4821", at: start.addingTimeInterval(61)).result == .accepted,
       "il blocco scade dopo 60 secondi")
+check(afterWrong.totalFailures == 3, "errori totali contati")
+
+let secondLock = (1...3).reduce(afterWrong) { current, _ in current.verify("0000", at: start.addingTimeInterval(61)).gate }
+check(secondLock.verify("4821", at: start.addingTimeInterval(62)).result == .locked(retryIn: 119),
+      "il secondo blocco dura il doppio")
+check(secondLock.totalFailures == 6, "gli errori totali continuano a salire tra un blocco e l'altro")
 
 let twoWrong = gate.verify("1111", at: start).gate.verify("2222", at: start).gate
 let reset = twoWrong.verify("4821", at: start).gate
-check(reset.failures == 0, "un PIN giusto azzera gli errori")
+check(reset.failures == 0 && reset.totalFailures == 0 && reset.lockouts == 0, "un PIN giusto azzera gli errori")
 check(gate.failures == 0, "verify non modifica il gate originale")
 
 check(PairingGate.randomPIN().count == 4, "PIN casuale di 4 cifre")
 check(PairingGate.randomPIN().allSatisfy(\.isNumber), "PIN casuale solo cifre")
+
+// MARK: - Token di riconnessione
+
+let token = TokenStore.randomToken()
+check(TokenStore.isWellFormed(token), "token casuale ben formato")
+check(TokenStore.randomToken() != token, "token diversi a ogni emissione")
+let store = (1...7).reduce(TokenStore(tokens: [])) { current, _ in current.issuing(TokenStore.randomToken()) }
+check(store.tokens.count == TokenStore.maxTokens, "al massimo \(TokenStore.maxTokens) token")
+check(TokenStore(tokens: []).issuing(token).contains(token), "token emesso riconosciuto")
 
 // MARK: - Pulizia testo
 
@@ -83,13 +98,25 @@ check(TextCleanup.normalize("A\u{2028}B\u{2029}C") == "A\nB\nC", "separatori Uni
 check(TextCleanup.normalize(String(repeating: "a", count: 30_000)).count == TextCleanup.maxLength,
       "note troppo lunghe tagliate")
 
-// MARK: - Stato
+// MARK: - Stato e note
 
-let base = PresentationState(ppt: true, running: true, slide: 2, count: 5, black: false, elapsed: 10, key: "a#5")
-check(!base.differs(from: PresentationState(ppt: true, running: true, slide: 2, count: 5, black: false, elapsed: 11, key: "a#5")),
-      "il solo tempo trascorso non conta come cambio")
-check(base.differs(from: PresentationState(ppt: true, running: true, slide: 3, count: 5, black: false, elapsed: 10, key: "a#5")),
-      "cambio slide rilevato")
+func state(slide: Int, elapsed: Double = 10, key: String = "a#5", slideID: Int = 0) -> PresentationState {
+    PresentationState(ppt: true, running: true, slide: slide, count: 5, black: false, elapsed: elapsed, key: key, slideID: slideID)
+}
+
+check(!state(slide: 2).differs(from: state(slide: 2, elapsed: 11)), "il solo tempo trascorso non conta come cambio")
+check(state(slide: 2).differs(from: state(slide: 3)), "cambio slide rilevato")
+check(state(slide: 2, slideID: 7).differs(from: state(slide: 2, slideID: 8)), "cambio di slide ID rilevato")
+
+let deck = Deck(key: "a#5", name: "x", slides: (1...5).map { SlideInfo(title: "", notes: "", hidden: false, id: 100 + $0) })
+check(!deck.isStale(for: state(slide: 2, slideID: 102)), "note allineate")
+check(deck.isStale(for: state(slide: 2, slideID: 104)), "slide riordinate: note da rileggere")
+check(deck.isStale(for: state(slide: 2, key: "b#5", slideID: 102)), "altra presentazione: note da rileggere")
+check(!deck.isStale(for: state(slide: 0, slideID: 0)), "schermata finale: niente da rileggere")
+let noIDs = Deck(key: "a#5", name: "x", slides: (1...5).map { _ in SlideInfo(title: "", notes: "", hidden: false, id: 0) })
+check(!noIDs.isStale(for: state(slide: 2, slideID: 55)), "ID non disponibili: nessun ricaricamento continuo")
+
+runControllerTests()
 
 print("\(passed) ok, \(failures) falliti")
 exit(failures == 0 ? 0 : 1)

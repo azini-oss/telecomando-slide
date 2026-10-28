@@ -1,5 +1,7 @@
 // Disegno dell'interfaccia a partire dal modello. Solo textContent: le note non diventano mai HTML.
-import { currentSlide, nextVisibleSlide, slideTitle, elapsedSeconds, deckMatches } from './protocol.js';
+import {
+  currentSlide, nextVisibleSlide, slideTitle, elapsedSeconds, deckMatches, notesStatus, isShowEnded,
+} from './protocol.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,7 +42,8 @@ export const els = Object.freeze({
 });
 
 let lastNotesKey = '';
-let lastListKey = '';
+let lastListDeck = null;
+let lastListCurrent = -1;
 let toastTimer = null;
 
 export function render(model) {
@@ -65,10 +68,12 @@ function renderRemote(model) {
   const running = Boolean(show?.running);
   const online = conn === 'connected';
 
-  els.dot.className = `dot ${online ? 'ok' : conn === 'disconnected' ? 'off' : 'warn'}`;
-  renderBanner(conn);
+  const healthy = online && !model.macSilent;
+  els.dot.className = `dot ${healthy ? 'ok' : conn === 'disconnected' ? 'off' : 'warn'}`;
+  renderBanner(model);
 
-  els.counter.textContent = running ? `${show.slide} / ${show.count}` : `– / ${show?.count || '–'}`;
+  const ended = isShowEnded(protocol);
+  els.counter.textContent = ended ? `Fine / ${show.count}` : running ? `${show.slide} / ${show.count}` : `– / ${show?.count || '–'}`;
   els.blackBtn.setAttribute('aria-pressed', String(Boolean(show?.black)));
   els.blackBtn.disabled = !running || !online;
   els.prevBtn.disabled = !running || !online;
@@ -86,16 +91,26 @@ function renderRemote(model) {
   renderSlideList(protocol);
 }
 
-function renderBanner(conn) {
+function renderBanner(model) {
   const texts = {
     connecting: 'Collegamento al Mac…',
     reconnecting: 'Connessione persa: riprovo…',
     disconnected: 'Disconnesso dal Mac',
   };
-  els.banner.hidden = !texts[conn];
-  els.bannerText.textContent = texts[conn] ?? '';
-  els.bannerBtn.hidden = conn !== 'disconnected';
+  const lockedFor = Math.ceil((model.lockedUntil - Date.now()) / 1000);
+  const text = texts[model.conn]
+    ?? (model.macSilent ? 'Il Mac non risponde: controlla PowerPoint sul Mac' : null)
+    ?? (lockedFor > 0 ? `Il Mac ha bloccato i tentativi: riprovo tra ${lockedFor} s` : null);
+  els.banner.hidden = !text;
+  els.bannerText.textContent = text ?? '';
+  els.bannerBtn.hidden = model.conn !== 'disconnected';
 }
+
+const NOTES_PLACEHOLDER = Object.freeze({
+  ended: 'Fine della presentazione.\nTocca Indietro per tornare all’ultima slide.',
+  loading: 'Caricamento note…',
+  stale: 'Aggiornamento note…',
+});
 
 function renderNotes(protocol, running) {
   const show = protocol.show;
@@ -108,14 +123,15 @@ function renderNotes(protocol, running) {
     return;
   }
 
+  const status = notesStatus(protocol);
   const slide = currentSlide(protocol);
-  const key = `${show.key}|${show.slide}|${slide?.notes ?? ''}`;
-  if (!slide) {
-    els.notes.textContent = deckMatches(protocol) ? '' : 'Caricamento note…';
-    els.notes.classList.add('empty');
-  } else {
+  const key = `${show.key}|${show.slide}|${status}|${slide?.notes ?? ''}`;
+  if (slide) {
     els.notes.textContent = slide.notes || 'Nessuna nota per questa slide.';
     els.notes.classList.toggle('empty', !slide.notes);
+  } else {
+    els.notes.textContent = NOTES_PLACEHOLDER[status] ?? '';
+    els.notes.classList.add('empty');
   }
   if (key !== lastNotesKey) {
     els.notes.scrollTop = 0;
@@ -133,8 +149,11 @@ function idleText(protocol) {
 }
 
 function renderNext(protocol, running) {
+  const status = notesStatus(protocol);
   const next = running ? nextVisibleSlide(protocol) : null;
-  const text = !running ? '—' : next ? `${next.index}. ${slideTitle(next, next.index)}` : 'Fine presentazione';
+  const text = !running || status === 'ended' || status === 'stale' || status === 'loading'
+    ? '—'
+    : next ? `${next.index}. ${slideTitle(next, next.index)}` : 'Fine presentazione';
   if (els.nextTitle.textContent === text) return;
   els.nextTitle.textContent = text;
   updateMarquee();
@@ -166,9 +185,10 @@ export function formatTime(totalSeconds) {
 function renderSlideList(protocol) {
   const slides = protocol.deck?.slides ?? [];
   const current = protocol.show?.running ? protocol.show.slide : 0;
-  const key = `${protocol.deck?.key}|${current}|${slides.length}`;
-  if (key === lastListKey) return;
-  lastListKey = key;
+  // Si ridisegna quando arriva un deck nuovo (anche con la stessa chiave) o cambia la slide.
+  if (protocol.deck === lastListDeck && current === lastListCurrent) return;
+  lastListDeck = protocol.deck;
+  lastListCurrent = current;
 
   const items = slides.map((slide, i) => {
     const index = i + 1;
@@ -176,6 +196,8 @@ function renderSlideList(protocol) {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.slide = String(index);
+    // In presentazione PowerPoint non può mostrare le slide nascoste: non sono toccabili.
+    button.disabled = Boolean(slide.hidden);
     if (index === current) button.setAttribute('aria-current', 'true');
     const num = Object.assign(document.createElement('span'), { className: 'num', textContent: String(index) });
     const title = Object.assign(document.createElement('span'), { className: 'title', textContent: slideTitle(slide, index) });

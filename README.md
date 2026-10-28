@@ -16,8 +16,9 @@ mostrata davvero — anche con le animazioni — perché le legge da PowerPoint 
 1. Sul Mac apri **Telecomando Slide** (`~/Applications`): compare l'icona ▶︎ nella barra dei menu.
    La prima volta macOS chiede il permesso **Bluetooth**: *Consenti*.
 2. Dal menu dell'icona: *Mostra QR e codice per il telefono…* → inquadra il QR con il telefono.
-3. Sul telefono scrivi il **codice di 4 cifre** e tocca *Connetti al Mac*; scegli «Telecomando Slide»
-   dall'elenco. Il codice resta memorizzato sul telefono.
+3. Sul telefono scrivi il **codice di 4 cifre** e tocca *Connetti al Mac*; scegli
+   «Telecomando Slide XXXX» dall'elenco (XXXX è il codice breve del tuo Mac, scritto nel menu).
+   Dopo il primo collegamento il telefono si riconnette da solo, senza codice.
 4. Al primo comando macOS chiede se *Telecomando Slide* può controllare **Microsoft PowerPoint**: *OK*.
 5. Apri la presentazione in PowerPoint e avviala (dal Mac o dal telefono).
 
@@ -31,9 +32,16 @@ Comportamento:
 - Le note mostrate sono sempre quelle della slide che PowerPoint sta proiettando: se qualcuno
   cambia slide dal Mac, il telefono si aggiorna da solo.
 - Se modifichi le note mentre sei collegato: menu ⋯ → *Ricarica le note*.
-- Il salto a una slide avanza/arretra passo passo (PowerPoint per Mac non accetta il salto
+- Se riordini, aggiungi o togli slide mentre sei collegato, le note si rileggono da sole.
+- Il salto a una slide avanza/arretra a piccoli passi (PowerPoint per Mac non accetta il salto
   diretto da AppleScript): con molte animazioni intermedie può richiedere un istante.
-- *Genera un nuovo codice* (menu del Mac) scollega i telefoni: dovranno reinserirlo.
+  Le slide nascoste non si possono scegliere: in presentazione PowerPoint le salta.
+- *Genera un nuovo codice* (menu del Mac) scollega i telefoni e annulla le riconnessioni salvate.
+  Se un telefono vicino sbaglia il codice molte volte, l'app ne genera uno nuovo da sola (i telefoni
+  già collegati restano collegati) e lo segnala nel menu.
+- *Collegamento cifrato* (menu del Mac): il Bluetooth richiede l'abbinamento di sistema e cifra
+  comandi e note. La prima volta Mac e telefono chiedono di confermare l'abbinamento. Consigliato con
+  presentazioni riservate; se l'abbinamento non riesce, togli la spunta.
 
 ## Note per l'IT / sicurezza
 
@@ -41,14 +49,19 @@ Pensata per non assomigliare in nulla a un malware e per essere verificabile:
 
 | | |
 |---|---|
-| Codice | Swift nativo arm64, compilato in locale da questo sorgente (`mac/build.sh`). Nessuno script, interprete o processo figlio. |
-| Firma | Ad-hoc con **runtime rinforzato** (`codesign --options runtime`). Unico entitlement: `com.apple.security.automation.apple-events`. |
+| Codice | Swift nativo arm64, compilato in locale da questo sorgente (`mac/build.sh`). Nessun processo figlio, nessun interprete esterno, nessun download. |
+| AppleScript | Un solo script, **incorporato nel sorgente** (`mac/Sources/PowerPointScript.swift`) ed eseguito dentro l'app con `NSAppleScript`: non si scarica né si modifica, e non c'è `osascript`. |
+| Firma | Ad-hoc con **runtime rinforzato** (`codesign --options runtime`), senza Team ID (nessun account sviluppatore Apple). Unico entitlement: `com.apple.security.automation.apple-events`. |
 | Rete | **Nessuna.** Niente socket, server, connessioni Internet. Solo Bluetooth LE (servizio GATT dedicato). |
-| Automazione | Apple Events **solo a Microsoft PowerPoint** (avanti/indietro/avvio/fine/schermo nero, lettura di titoli e note). Niente System Events, niente simulazione di tastiera, niente Accessibilità. |
-| File | Non legge né scrive file. Salva solo il codice di accoppiamento nelle preferenze (`UserDefaults`). |
+| Automazione | Apple Events **solo a Microsoft PowerPoint** (avanti/indietro/avvio/fine/schermo nero, lettura di titoli e note). Compare in Privacy › Automazione. Niente System Events, niente simulazione di tastiera, niente Accessibilità. |
+| File | Non legge né scrive file. Nelle preferenze (`UserDefaults`) salva solo codice di accoppiamento, token di riconnessione e opzioni. |
 | Avvio | Solo manuale. Nessun LaunchAgent, nessun elemento di login, nessuna persistenza. |
-| Bluetooth | Accetta comandi solo dopo il codice a 4 cifre; dopo 5 errori si blocca per 60 s. Testo dei comandi validato su un elenco chiuso. |
-| Pagina telefono | Statica (HTML/JS/CSS), nessun server, nessun dato inviato in rete. Le note viaggiano solo via Bluetooth tra telefono e Mac. |
+| Bluetooth | Comandi accettati solo dopo il codice a 4 cifre (o un token di riconnessione da 128 bit). Blocchi crescenti dopo 5 errori, codice nuovo automatico dopo 20. Testo dei comandi validato su un elenco chiuso. Cifratura opzionale tramite abbinamento di sistema. |
+| Pagina telefono | Statica (HTML/JS/CSS), nessun server, nessun dato inviato in rete. Le note viaggiano solo via Bluetooth tra telefono e Mac. Pubblicazione con azioni GitHub fissate a commit precisi. |
+
+Ogni ricompilazione cambia l'impronta della firma ad-hoc: macOS può richiedere di nuovo i permessi
+Bluetooth e Automazione (se PowerPoint risponde «permesso negato»:
+`tccutil reset AppleEvents com.azini.telecomandoslide`, poi riapri l'app).
 
 Verifica della firma:
 
@@ -73,7 +86,7 @@ Verifica del collegamento con PowerPoint senza Bluetooth (agisce sulla presentaz
 `--selftest-nav` in più avvia la presentazione attiva e prova avanti/indietro/salto/nero: usalo
 solo con una presentazione di prova in primo piano.
 
-Protocollo: il telefono scrive comandi testuali brevi (`hello:1234`, `next`, `prev`, `first`,
+Protocollo: il telefono scrive comandi testuali brevi (`hello:1234`, `resume:<token>`, `next`, `prev`, `first`,
 `goto:N`, `start`, `stop`, `black`, `reload`); il Mac risponde con messaggi JSON
 (`state`, `deck`, `auth`, `err`) divisi in frame `[id u8][indice u16][totale u16][dati]`.
 La pagina si pubblica da sola su GitHub Pages a ogni push su `main` (`.github/workflows/pages.yml`).

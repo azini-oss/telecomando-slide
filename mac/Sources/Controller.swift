@@ -1,4 +1,4 @@
-import CoreBluetooth
+import Foundation
 import os
 
 /// Quello che il menu mostra all'utente.
@@ -8,196 +8,388 @@ struct StatusSnapshot: Equatable {
     let state: PresentationState
     let problem: String?
     let pin: String
+    let encrypted: Bool
 }
 
-/// Collega telefono (Bluetooth) e PowerPoint: autentica, esegue i comandi, invia stato e note.
+/// Collega telefoni e PowerPoint: autentica, esegue i comandi, invia stato e note.
+/// Le operazioni lunghe sono spezzate in passi brevi (`schedule`) per non bloccare l'app.
 final class Controller {
-    private enum Keys {
+    enum Keys {
         static let pin = "pairingPIN"
+        static let tokens = "resumeTokens"
+        static let encrypted = "encryptedLink"
     }
 
-    static let pollInterval: TimeInterval = 0.5
-    static let heartbeatInterval: TimeInterval = 10
-    static let errorPause: TimeInterval = 3
+    enum Timing {
+        static let pollInterval: TimeInterval = 0.5
+        static let heartbeat: TimeInterval = 10
+        static let errorPause: TimeInterval = 3
+        static let minDeckReload: TimeInterval = 2
+        static let maxDeckBackoff: TimeInterval = 15
+        static let deckChunk = 8
+        static let jumpStepsPerRound = 6
+        static let maxJumpRounds = 80
+        static let newPINAfterFailures = 20
+    }
+
+    private struct DeckLoad {
+        let generation: Int
+        let info: DeckInfo
+        let slides: [SlideInfo]
+    }
 
     var onChange: ((StatusSnapshot) -> Void)?
 
     private let log = Logger(subsystem: AppInfo.subsystem, category: "controller")
+    private let bridge: PresentationBridge
+    private let link: PhoneLink
     private let defaults: UserDefaults
-    private let bridge = PowerPointBridge()
-    private let ble = BLEPeripheral()
+    private let now: () -> Date
+    private let schedule: (@escaping () -> Void) -> Void
 
     private var gate: PairingGate
-    private var trusted: [UUID: CBCentral] = [:]
+    private var tokens: TokenStore
+    private var encrypted: Bool
+    private var subscribed: Set<UUID> = []
+    private var trusted: Set<UUID> = []
     private var bluetooth = BluetoothStatus.starting
     private var lastState = PresentationState.closed
     private var deck: Deck?
-    private var deckAttemptKey: String?
-    private var problem: String?
+    private var deckLoad: DeckLoad?
+    private var loadGeneration = 0
+    private var deckFailures = 0
+    private var deckRetryAt = Date.distantPast
+    private var jumpTarget: Int?
+    private var jumpGeneration = 0
+    private var jumpRounds = 0
+    private var bridgeProblem: String?
+    private var pairingProblem: String?
     private var pollTimer: Timer?
     private var pausedUntil: Date?
     private var lastHeartbeat = Date.distantPast
+    private var activity: NSObjectProtocol?
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        bridge: PresentationBridge,
+        link: PhoneLink,
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = Date.init,
+        schedule: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+    ) {
+        self.bridge = bridge
+        self.link = link
         self.defaults = defaults
+        self.now = now
+        self.schedule = schedule
         let saved = defaults.string(forKey: Keys.pin).flatMap { PairingGate.isWellFormed($0) ? $0 : nil }
         let pin = saved ?? PairingGate.randomPIN()
         defaults.set(pin, forKey: Keys.pin)
         gate = PairingGate(pin: pin)
+        tokens = TokenStore(tokens: (defaults.stringArray(forKey: Keys.tokens) ?? []).filter(TokenStore.isWellFormed))
+        encrypted = defaults.bool(forKey: Keys.encrypted)
     }
 
     var snapshot: StatusSnapshot {
-        StatusSnapshot(bluetooth: bluetooth, phones: trusted.count, state: lastState, problem: problem, pin: gate.pin)
+        StatusSnapshot(bluetooth: bluetooth, phones: trusted.count, state: lastState,
+                       problem: bridgeProblem ?? pairingProblem, pin: gate.pin, encrypted: encrypted)
     }
 
     func start() {
-        ble.onStatusChange = { [weak self] status in
+        link.onStatusChange = { [weak self] status in
             self?.bluetooth = status
             self?.notify()
         }
-        ble.onCommand = { [weak self] central, text in self?.handle(text, from: central) }
-        ble.onDisconnect = { [weak self] central in self?.forget(central) }
-        ble.start()
+        link.onSubscribe = { [weak self] phone in self?.subscribed.insert(phone) }
+        link.onDisconnect = { [weak self] phone in self?.forget(phone) }
+        link.onCommand = { [weak self] phone, text in self?.handle(text, from: phone) }
+        link.start(encrypted: encrypted)
     }
 
-    /// Nuovo codice: i telefoni già collegati devono reinserirlo.
+    /// Codice nuovo scelto dall'utente: revoca anche le riconnessioni salvate dei telefoni.
     func regeneratePIN() {
-        let pin = PairingGate.randomPIN()
-        defaults.set(pin, forKey: Keys.pin)
-        gate = PairingGate(pin: pin)
-        trusted.values.forEach { send(AuthMessage(ok: false, retryIn: nil), to: $0) }
-        trusted = [:]
+        pairingProblem = nil
+        rotatePIN(revokeAll: true)
+    }
+
+    func setEncrypted(_ on: Bool) {
+        encrypted = on
+        defaults.set(on, forKey: Keys.encrypted)
+        subscribed = []
+        trusted = []
         stopPolling()
+        link.restart(encrypted: on)
         notify()
+    }
+
+    /// Un giro di lettura (chiamato dal timer; i test lo chiamano direttamente).
+    func tick() {
+        refresh(force: false)
     }
 
     // MARK: - Comandi dal telefono
 
-    private func handle(_ text: String, from central: CBCentral) {
+    private func handle(_ text: String, from phone: UUID) {
         guard let command = Command(text: text) else {
-            send(ErrorMessage(msg: "Comando non valido"), to: central)
+            if trusted.contains(phone) { send(ErrorMessage(msg: "Comando non valido"), to: phone) }
             return
         }
-        if case .hello(let pin) = command {
-            authenticate(pin, central: central)
-            return
+        switch command {
+        case .hello(let pin): authenticate(pin: pin, phone: phone)
+        case .resume(let token): resume(token: token, phone: phone)
+        default:
+            guard trusted.contains(phone) else { return } // telefoni non autenticati: ignorati
+            execute(command)
         }
-        guard trusted[central.identifier] != nil else {
-            send(AuthMessage(ok: false, retryIn: nil), to: central)
-            return
-        }
-        if command == .reload {
-            deck = nil
-            deckAttemptKey = nil
-        }
-        if case .failure(let error) = bridge.perform(command) {
-            report(error)
-        }
-        refresh(force: true)
     }
 
-    private func authenticate(_ pin: String, central: CBCentral) {
-        let (result, newGate) = gate.verify(pin, at: Date())
+    private func execute(_ command: Command) {
+        if command.isNavigation { jumpTarget = nil }
+        switch command {
+        case .reload:
+            deck = nil
+            deckLoad = nil
+            deckFailures = 0
+            deckRetryAt = .distantPast
+            refresh(force: true)
+        case .goTo(let slide):
+            startJump(to: slide)
+        default:
+            if case .failure(let error) = bridge.perform(command) { report(error) }
+            refresh(force: true)
+        }
+    }
+
+    private func authenticate(pin: String, phone: UUID) {
+        guard subscribed.contains(phone) else { return }
+        let (result, newGate) = gate.verify(pin, at: now())
         gate = newGate
         switch result {
         case .accepted:
-            trusted[central.identifier] = central
-            send(AuthMessage(ok: true, retryIn: nil), to: central)
-            if let deck { send(DeckMessage(deck), to: central) }
-            startPolling()
-            refresh(force: true)
+            pairingProblem = nil
+            let token = TokenStore.randomToken()
+            tokens = tokens.issuing(token)
+            defaults.set(tokens.tokens, forKey: Keys.tokens)
+            trust(phone, token: token)
         case .rejected:
             log.notice("Codice errato da un telefono")
-            send(AuthMessage(ok: false, retryIn: nil), to: central)
+            send(AuthMessage.rejected, to: phone)
+            noteFailedAttempt()
         case .locked(let seconds):
             log.notice("Troppi codici errati: blocco per \(seconds) s")
-            send(AuthMessage(ok: false, retryIn: seconds), to: central)
+            send(AuthMessage(ok: false, retryIn: seconds, token: nil), to: phone)
+            noteFailedAttempt()
         }
         notify()
     }
 
-    private func forget(_ central: CBCentral) {
-        guard trusted.removeValue(forKey: central.identifier) != nil else { return }
+    private func resume(token: String, phone: UUID) {
+        guard subscribed.contains(phone) else { return }
+        guard tokens.contains(token) else {
+            send(AuthMessage.rejected, to: phone)
+            return
+        }
+        trust(phone, token: token)
+        notify()
+    }
+
+    private func trust(_ phone: UUID, token: String) {
+        trusted.insert(phone)
+        send(AuthMessage(ok: true, retryIn: nil, token: token), to: phone)
+        if let deck { send(DeckMessage(deck), to: phone) }
+        startPolling()
+        refresh(force: true)
+    }
+
+    /// Molti tentativi sbagliati = qualcuno vicino prova a indovinare: codice nuovo,
+    /// ma i telefoni già collegati (e le loro riconnessioni) restano validi.
+    private func noteFailedAttempt() {
+        guard gate.totalFailures < Timing.newPINAfterFailures else {
+            rotatePIN(revokeAll: false)
+            pairingProblem = "Troppi codici errati da telefoni vicini: ho generato un codice nuovo"
+            return
+        }
+        pairingProblem = "\(gate.totalFailures) codici errati da telefoni vicini"
+    }
+
+    private func rotatePIN(revokeAll: Bool) {
+        let pin = PairingGate.randomPIN()
+        defaults.set(pin, forKey: Keys.pin)
+        gate = PairingGate(pin: pin)
+        if revokeAll {
+            tokens = TokenStore(tokens: [])
+            defaults.set([String](), forKey: Keys.tokens)
+            trusted.forEach { send(AuthMessage.rejected, to: $0) }
+            trusted = []
+            stopPolling()
+        }
+        notify()
+    }
+
+    private func forget(_ phone: UUID) {
+        subscribed.remove(phone)
+        guard trusted.remove(phone) != nil else { return }
         if trusted.isEmpty { stopPolling() }
         notify()
+    }
+
+    // MARK: - Salto a una slide (a passi brevi)
+
+    private func startJump(to slide: Int) {
+        jumpGeneration += 1
+        jumpTarget = slide
+        jumpRounds = 0
+        continueJump(jumpGeneration)
+    }
+
+    private func continueJump(_ generation: Int) {
+        guard let target = jumpTarget, generation == jumpGeneration else { return }
+        switch bridge.step(toward: target, maxSteps: Timing.jumpStepsPerRound) {
+        case .success(let progress):
+            jumpRounds += 1
+            if progress.done {
+                jumpTarget = nil
+            } else if jumpRounds >= Timing.maxJumpRounds {
+                jumpTarget = nil
+                report(.jumpFailed)
+            } else {
+                schedule { [weak self] in self?.continueJump(generation) }
+            }
+        case .failure(let error):
+            jumpTarget = nil
+            report(error)
+        }
+        refresh(force: true)
     }
 
     // MARK: - Lettura periodica di PowerPoint
 
     private func startPolling() {
         guard pollTimer == nil else { return }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
-            self?.refresh(force: false)
-        }
+        let timer = Timer(timeInterval: Timing.pollInterval, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(timer, forMode: .common) // continua anche con il menu aperto
+        pollTimer = timer
+        // Evita che App Nap rallenti la lettura mentre PowerPoint è in primo piano.
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Telefono collegato alla presentazione")
     }
 
     private func stopPolling() {
         pollTimer?.invalidate()
         pollTimer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
     }
 
     private func refresh(force: Bool) {
         guard !trusted.isEmpty else { return }
-        if !force, let pausedUntil, Date() < pausedUntil { return }
+        if !force, let pausedUntil, now() < pausedUntil { return }
 
         switch bridge.readState() {
         case .success(let state):
+            let hadProblem = bridgeProblem != nil
             pausedUntil = nil
-            if problem != nil, state.ppt {
-                problem = nil
-            }
-            if state.key != deckAttemptKey {
-                loadDeck(for: state)
-            }
+            bridgeProblem = nil
             let changed = state.differs(from: lastState)
-            let heartbeatDue = Date().timeIntervalSince(lastHeartbeat) > Self.heartbeatInterval
+            let heartbeatDue = now().timeIntervalSince(lastHeartbeat) >= Timing.heartbeat
             lastState = state
             if changed || force || heartbeatDue {
                 broadcast(StateMessage(state))
-                lastHeartbeat = Date()
+                lastHeartbeat = now()
             }
-            if changed { notify() }
+            ensureDeck(for: state)
+            if changed || hadProblem { notify() }
         case .failure(let error):
-            pausedUntil = Date().addingTimeInterval(Self.errorPause)
+            pausedUntil = now().addingTimeInterval(Timing.errorPause)
             report(error)
         }
     }
 
-    private func loadDeck(for state: PresentationState) {
-        deckAttemptKey = state.key
-        guard state.ppt, !state.key.isEmpty else {
-            let empty = Deck(key: "", name: "", slides: [])
-            deck = empty
-            broadcast(DeckMessage(empty))
+    // MARK: - Note (lette a blocchi)
+
+    private func ensureDeck(for state: PresentationState) {
+        guard deckLoad == nil, now() >= deckRetryAt else { return }
+        guard deck.map({ $0.isStale(for: state) }) ?? true else { return }
+        guard state.ppt, !state.key.isEmpty, state.count > 0 else {
+            finishDeck(Deck(key: state.key, name: "", slides: []))
             return
         }
-        switch bridge.readDeck() {
-        case .success(let loaded):
-            deck = loaded
-            deckAttemptKey = loaded.key
-            broadcast(DeckMessage(loaded))
+        switch bridge.readDeckInfo() {
+        case .success(let info):
+            guard !info.key.isEmpty, info.count > 0 else {
+                finishDeck(Deck(key: info.key, name: info.name, slides: []))
+                return
+            }
+            loadGeneration += 1
+            let generation = loadGeneration
+            deckLoad = DeckLoad(generation: generation, info: info, slides: [])
+            schedule { [weak self] in self?.continueDeckLoad(generation) }
         case .failure(let error):
-            report(error)
+            deckLoadFailed(error)
+        }
+    }
+
+    private func continueDeckLoad(_ generation: Int) {
+        guard let load = deckLoad, load.generation == generation else { return }
+        let from = load.slides.count + 1
+        let to = min(load.info.count, from + Timing.deckChunk - 1)
+        switch bridge.readSlides(from: from, to: to) {
+        case .success(let chunk):
+            guard chunk.key == load.info.key, !chunk.slides.isEmpty else {
+                deckLoad = nil // presentazione cambiata durante la lettura: si riparte al prossimo giro
+                return
+            }
+            let slides = load.slides + chunk.slides
+            if slides.count >= load.info.count {
+                deckLoad = nil
+                finishDeck(Deck(key: load.info.key, name: load.info.name, slides: slides))
+            } else {
+                deckLoad = DeckLoad(generation: generation, info: load.info, slides: slides)
+                schedule { [weak self] in self?.continueDeckLoad(generation) }
+            }
+        case .failure(let error):
+            deckLoad = nil
+            deckLoadFailed(error)
+        }
+    }
+
+    private func finishDeck(_ loaded: Deck) {
+        let changed = loaded != deck
+        deck = loaded
+        deckFailures = 0
+        deckRetryAt = now().addingTimeInterval(Timing.minDeckReload)
+        guard changed else { return }
+        if !broadcast(DeckMessage(loaded)) {
+            broadcast(ErrorMessage(msg: "Presentazione troppo grande per il Bluetooth: note non inviate"))
+        }
+    }
+
+    private func deckLoadFailed(_ error: BridgeError) {
+        deckFailures += 1
+        deckRetryAt = now().addingTimeInterval(min(Timing.maxDeckBackoff, pow(2, Double(deckFailures))))
+        report(error)
+        if deckFailures == 3 {
+            broadcast(ErrorMessage(msg: "Note non disponibili: riprova con «Ricarica le note»"))
         }
     }
 
     private func report(_ error: BridgeError) {
         let message = error.userMessage
-        guard message != problem else { return }
-        problem = message
+        guard message != bridgeProblem else { return }
+        bridgeProblem = message
         broadcast(ErrorMessage(msg: message))
         notify()
     }
 
     // MARK: - Invio
 
-    private func broadcast<T: Encodable>(_ message: T) {
-        trusted.values.forEach { send(message, to: $0) }
+    @discardableResult
+    private func broadcast<T: Encodable>(_ message: T) -> Bool {
+        trusted.reduce(true) { ok, phone in send(message, to: phone) && ok }
     }
 
-    private func send<T: Encodable>(_ message: T, to central: CBCentral) {
-        guard let data = MessageEncoder.encode(message) else { return }
-        ble.send(data, to: central)
+    @discardableResult
+    private func send<T: Encodable>(_ message: T, to phone: UUID) -> Bool {
+        guard let data = MessageEncoder.encode(message) else { return false }
+        return link.send(data, to: phone)
     }
 
     private func notify() {

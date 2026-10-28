@@ -24,7 +24,7 @@ final class QRWindowController: NSWindowController {
     }
 
     private func buildContent(url: String) -> NSView {
-        let intro = NSTextField(wrappingLabelWithString: "1. Inquadra il QR con la fotocamera del telefono.\n2. Tocca «Connetti al Mac» e inserisci il codice.")
+        let intro = NSTextField(wrappingLabelWithString: "1. Inquadra il QR con la fotocamera del telefono.\n2. Inserisci il codice e tocca «Connetti al Mac».\n3. Nell'elenco scegli «\(AppInfo.advertisedName)».")
         intro.font = .systemFont(ofSize: 13)
 
         let qr = NSImageView(image: Self.qrImage(for: url, side: 240) ?? NSImage())

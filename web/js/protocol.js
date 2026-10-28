@@ -10,10 +10,18 @@ export function isValidPin(pin) {
   return typeof pin === 'string' && /^[0-9]{4}$/.test(pin);
 }
 
+export function isValidToken(token) {
+  return typeof token === 'string' && /^[0-9a-f]{32}$/.test(token);
+}
+
 export const commands = Object.freeze({
   hello: (pin) => {
     if (!isValidPin(pin)) throw new Error('Il codice deve avere 4 cifre');
     return `hello:${pin}`;
+  },
+  resume: (token) => {
+    if (!isValidToken(token)) throw new Error('Token di riconnessione non valido');
+    return `resume:${token}`;
   },
   next: () => 'next',
   prev: () => 'prev',
@@ -43,6 +51,7 @@ export function initialState() {
   return Object.freeze({
     auth: 'none', // none | ok | rejected | locked
     retryIn: 0,
+    token: null,
     deck: null,
     show: null,
     showReceivedAt: 0,
@@ -53,7 +62,7 @@ export function initialState() {
 export function applyMessage(state, message, now = Date.now()) {
   switch (message.t) {
     case 'auth':
-      if (message.ok) return Object.freeze({ ...state, auth: 'ok', retryIn: 0 });
+      if (message.ok) return Object.freeze({ ...state, auth: 'ok', retryIn: 0, token: message.token ?? null });
       return Object.freeze({
         ...state,
         auth: message.retryIn ? 'locked' : 'rejected',
@@ -80,15 +89,34 @@ export function deckMatches(state) {
   return Boolean(state.deck && state.show && state.deck.key === state.show.key);
 }
 
+/** Le note in memoria sono di un'altra disposizione delle slide (riordinate durante le prove). */
+function slideIdMismatch(slide, show) {
+  return Boolean(slide?.id && show.slideId && slide.id !== show.slideId);
+}
+
+export function isShowEnded(state) {
+  return Boolean(state.show?.running && state.show.slide === 0);
+}
+
+/** 'idle' (non avviata) | 'ended' (schermata finale) | 'loading' | 'stale' | 'ok' */
+export function notesStatus(state) {
+  if (!state.show?.running) return 'idle';
+  if (isShowEnded(state)) return 'ended';
+  if (!deckMatches(state)) return 'loading';
+  const slide = state.deck.slides[state.show.slide - 1];
+  if (!slide || slideIdMismatch(slide, state.show)) return 'stale';
+  return 'ok';
+}
+
 export function currentSlide(state) {
-  if (!deckMatches(state) || !state.show.running) return null;
+  if (notesStatus(state) !== 'ok') return null;
   const index = state.show.slide;
-  const slide = state.deck.slides[index - 1];
-  return slide ? { ...slide, index } : null;
+  return { ...state.deck.slides[index - 1], index };
 }
 
 export function nextVisibleSlide(state) {
-  if (!deckMatches(state)) return null;
+  if (!deckMatches(state) || isShowEnded(state)) return null;
+  if (state.show.running && slideIdMismatch(state.deck.slides[state.show.slide - 1], state.show)) return null;
   const slides = state.deck.slides;
   const start = state.show.running ? state.show.slide : 0;
   const offset = slides.slice(start).findIndex((s) => !s.hidden);

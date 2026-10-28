@@ -1,74 +1,109 @@
 import CoreBluetooth
 import os
 
-enum BluetoothStatus: Equatable {
-    case starting
-    case ready
-    case off
-    case unauthorized
-    case unsupported
-}
-
 /// Il Mac si annuncia come periferica Bluetooth LE con un servizio dedicato:
 /// - comando (scrittura): testo breve inviato dal telefono
 /// - eventi (notifiche): messaggi JSON divisi in frame (vedi Framing)
+/// Con `encrypted` le due caratteristiche richiedono il collegamento cifrato (abbinamento di sistema).
 /// Usa il main queue, come il resto dell'app.
-final class BLEPeripheral: NSObject, CBPeripheralManagerDelegate {
+final class BLEPeripheral: NSObject, PhoneLink, CBPeripheralManagerDelegate {
     static let serviceUUID = CBUUID(string: "e42b5411-b077-4060-b77f-1fdc51501853")
     static let commandUUID = CBUUID(string: "3589d7a0-018d-4575-bcd8-3ad5e6fa1996")
     static let eventUUID = CBUUID(string: "b3646ad2-5c8f-40f3-8905-5a5a9842889d")
+    /// Oltre questo numero di frame un messaggio non si invia (e il telefono lo rifiuterebbe).
+    static let maxFramesPerMessage = 4_096
+    /// Coda massima per telefono: oltre, il telefono è troppo lento e la sua coda si svuota.
+    static let maxQueuedFrames = 8_192
 
     var onStatusChange: ((BluetoothStatus) -> Void)?
-    var onCommand: ((CBCentral, String) -> Void)?
-    var onDisconnect: ((CBCentral) -> Void)?
+    var onSubscribe: ((UUID) -> Void)?
+    var onDisconnect: ((UUID) -> Void)?
+    var onCommand: ((UUID, String) -> Void)?
 
     private let log = Logger(subsystem: AppInfo.subsystem, category: "bluetooth")
+    private let advertisedName: String
+    private var encrypted = false
     private var manager: CBPeripheralManager?
+    private var eventCharacteristic: CBMutableCharacteristic?
     private var subscribers: [UUID: CBCentral] = [:]
-    private var outbox: [(central: CBCentral, frame: Data)] = []
+    private var outboxes: [UUID: [Data]] = [:]
     private var messageCounter: UInt8 = 0
 
-    private let commandCharacteristic = CBMutableCharacteristic(
-        type: BLEPeripheral.commandUUID, properties: [.write], value: nil, permissions: [.writeable]
-    )
-    private let eventCharacteristic = CBMutableCharacteristic(
-        type: BLEPeripheral.eventUUID, properties: [.notify], value: nil, permissions: []
-    )
+    init(advertisedName: String) {
+        self.advertisedName = advertisedName
+    }
 
-    func start() {
+    func start(encrypted: Bool) {
+        self.encrypted = encrypted
         guard manager == nil else { return }
         manager = CBPeripheralManager(delegate: self, queue: nil)
     }
 
-    func send(_ payload: Data, to central: CBCentral) {
-        guard subscribers[central.identifier] != nil else { return }
-        messageCounter &+= 1
-        guard let frames = Framing.frames(for: payload, messageID: messageCounter, maxFrameSize: central.maximumUpdateValueLength) else {
-            log.error("Messaggio troppo grande, non inviato (\(payload.count) byte)")
-            return
-        }
-        outbox.append(contentsOf: frames.map { (central: central, frame: $0) })
-        flush()
+    func restart(encrypted: Bool) {
+        self.encrypted = encrypted
+        dropAllSubscribers()
+        guard let manager, manager.state == .poweredOn else { return }
+        manager.stopAdvertising()
+        publishService(on: manager)
     }
 
+    @discardableResult
+    func send(_ payload: Data, to phone: UUID) -> Bool {
+        guard subscribers[phone] != nil else { return true }
+        messageCounter &+= 1
+        guard let frames = Framing.frames(for: payload, messageID: messageCounter,
+                                          maxFrameSize: subscribers[phone]?.maximumUpdateValueLength ?? 20),
+              frames.count <= Self.maxFramesPerMessage else {
+            log.error("Messaggio troppo grande, non inviato (\(payload.count) byte)")
+            return false
+        }
+        let queue = (outboxes[phone] ?? []) + frames
+        guard queue.count <= Self.maxQueuedFrames else {
+            log.error("Telefono troppo lento: coda svuotata")
+            outboxes[phone] = []
+            return true
+        }
+        outboxes[phone] = queue
+        flush()
+        return true
+    }
+
+    /// Invia a turno un frame per telefono, così un telefono lento non blocca gli altri.
     private func flush() {
-        guard let manager else { return }
-        while let next = outbox.first {
-            guard subscribers[next.central.identifier] != nil else {
-                outbox.removeFirst()
-                continue
+        guard let manager, let characteristic = eventCharacteristic else { return }
+        var progressed = true
+        while progressed {
+            progressed = false
+            for (phone, queue) in outboxes where !queue.isEmpty {
+                guard let central = subscribers[phone] else {
+                    outboxes[phone] = nil
+                    continue
+                }
+                // false = coda di sistema piena: si riprende in peripheralManagerIsReady.
+                guard manager.updateValue(queue[0], for: characteristic, onSubscribedCentrals: [central]) else { return }
+                outboxes[phone] = Array(queue.dropFirst())
+                progressed = true
             }
-            // false = coda di invio piena: si riprende in peripheralManagerIsReady.
-            guard manager.updateValue(next.frame, for: eventCharacteristic, onSubscribedCentrals: [next.central]) else { return }
-            outbox.removeFirst()
         }
     }
 
     private func publishService(on manager: CBPeripheralManager) {
+        let commandPermissions: CBAttributePermissions = encrypted ? [.writeEncryptionRequired] : [.writeable]
+        let eventProperties: CBCharacteristicProperties = encrypted ? [.notify, .notifyEncryptionRequired] : [.notify]
+        let command = CBMutableCharacteristic(type: Self.commandUUID, properties: [.write], value: nil, permissions: commandPermissions)
+        let event = CBMutableCharacteristic(type: Self.eventUUID, properties: eventProperties, value: nil, permissions: [])
         let service = CBMutableService(type: Self.serviceUUID, primary: true)
-        service.characteristics = [commandCharacteristic, eventCharacteristic]
+        service.characteristics = [command, event]
+        eventCharacteristic = event
         manager.removeAllServices()
         manager.add(service)
+    }
+
+    private func dropAllSubscribers() {
+        let phones = Array(subscribers.keys)
+        subscribers = [:]
+        outboxes = [:]
+        phones.forEach { onDisconnect?($0) }
     }
 
     // MARK: - CBPeripheralManagerDelegate
@@ -82,13 +117,11 @@ final class BLEPeripheral: NSObject, CBPeripheralManagerDelegate {
         case .unsupported: status = .unsupported
         default: status = .starting
         }
-        log.info("Stato Bluetooth: \(String(describing: status), privacy: .public)")
+        log.notice("Stato Bluetooth: \(String(describing: status), privacy: .public)")
         if status == .ready {
             publishService(on: manager)
         } else {
-            subscribers.values.forEach { onDisconnect?($0) }
-            subscribers = [:]
-            outbox = []
+            dropAllSubscribers()
         }
         onStatusChange?(status)
     }
@@ -99,7 +132,7 @@ final class BLEPeripheral: NSObject, CBPeripheralManagerDelegate {
             return
         }
         manager.startAdvertising([
-            CBAdvertisementDataLocalNameKey: AppInfo.displayName,
+            CBAdvertisementDataLocalNameKey: advertisedName,
             CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
         ])
     }
@@ -108,20 +141,21 @@ final class BLEPeripheral: NSObject, CBPeripheralManagerDelegate {
         if let error {
             log.error("Annuncio Bluetooth fallito: \(error.localizedDescription, privacy: .public)")
         } else {
-            log.info("Annuncio Bluetooth avviato")
+            log.notice("Annuncio Bluetooth avviato come \(self.advertisedName, privacy: .public)")
         }
     }
 
     func peripheralManager(_ manager: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         subscribers[central.identifier] = central
-        log.info("Telefono collegato")
+        log.notice("Telefono collegato")
+        onSubscribe?(central.identifier)
     }
 
     func peripheralManager(_ manager: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         subscribers[central.identifier] = nil
-        outbox.removeAll { $0.central.identifier == central.identifier }
-        log.info("Telefono scollegato")
-        onDisconnect?(central)
+        outboxes[central.identifier] = nil
+        log.notice("Telefono scollegato")
+        onDisconnect?(central.identifier)
     }
 
     func peripheralManagerIsReady(toUpdateSubscribers manager: CBPeripheralManager) {
@@ -141,7 +175,7 @@ final class BLEPeripheral: NSObject, CBPeripheralManagerDelegate {
         manager.respond(to: first, withResult: .success)
         for request in requests {
             guard let value = request.value, let text = String(data: value, encoding: .utf8) else { continue }
-            onCommand?(request.central, text)
+            onCommand?(request.central.identifier, text)
         }
     }
 }

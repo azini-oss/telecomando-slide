@@ -20,7 +20,11 @@ const SLIDES = Object.freeze([
 ]);
 
 const KEY = 'demo#6';
-const DECK = Object.freeze({ t: 'deck', key: KEY, name: 'Presentazione demo', slides: SLIDES.map(({ builds, ...s }) => s) });
+const slideId = (index) => 256 + index;
+const DECK = Object.freeze({
+  t: 'deck', key: KEY, name: 'Presentazione demo',
+  slides: SLIDES.map(({ builds, ...s }, i) => ({ ...s, id: slideId(i + 1) })),
+});
 
 export function createDemoTransport({ onBytes, onStatus }) {
   const encoder = new TextEncoder();
@@ -31,6 +35,7 @@ export function createDemoTransport({ onBytes, onStatus }) {
   const emitState = () => emit({
     t: 'state', ppt: true, running: show.running, slide: show.slide, count: SLIDES.length, black: show.black,
     elapsed: show.running ? (Date.now() - show.startedAt) / 1000 : 0, key: KEY,
+    slideId: show.slide > 0 ? slideId(show.slide) : 0,
   });
 
   const visibleFrom = (index, step) => {
@@ -39,15 +44,17 @@ export function createDemoTransport({ onBytes, onStatus }) {
     return i;
   };
 
+  // slide 0 = schermata finale, come PowerPoint dopo l'ultima slide.
   const moves = {
     next: () => {
+      if (show.slide === 0) return show;
       if (show.build < SLIDES[show.slide - 1].builds) return { ...show, build: show.build + 1 };
       const target = visibleFrom(show.slide, 1);
-      return target > SLIDES.length ? show : { ...show, slide: target, build: 0 };
+      return target > SLIDES.length ? { ...show, slide: 0, build: 0 } : { ...show, slide: target, build: 0 };
     },
     prev: () => {
       if (show.build > 0) return { ...show, build: show.build - 1 };
-      const target = visibleFrom(show.slide, -1);
+      const target = visibleFrom(show.slide === 0 ? SLIDES.length + 1 : show.slide, -1);
       return target < 1 ? show : { ...show, slide: target, build: SLIDES[target - 1].builds };
     },
     first: () => ({ ...show, slide: 1, build: 0 }),
@@ -68,7 +75,8 @@ export function createDemoTransport({ onBytes, onStatus }) {
       emit(DECK);
     } else if (text.startsWith('goto:') && show.running) {
       const target = Number(text.slice(5));
-      if (target >= 1 && target <= SLIDES.length) show = Object.freeze({ ...show, slide: target, build: 0 });
+      if (SLIDES[target - 1]?.hidden) emit({ t: 'err', msg: 'La slide è nascosta: in presentazione non ci si può andare' });
+      else if (target >= 1 && target <= SLIDES.length) show = Object.freeze({ ...show, slide: target, build: 0 });
     } else if (moves[text] && show.running) {
       show = Object.freeze(moves[text]());
     } else if (!show.running) {

@@ -3,7 +3,9 @@ import { SERVICE_UUID, COMMAND_UUID, EVENT_UUID } from './protocol.js';
 import { addFrame, emptyBuffers } from './framing.js';
 
 const RETRY_DELAYS_MS = [1000, 2000, 3000, 5000, 8000, 10000, 10000, 10000];
-const DEVICE_NAME = 'Telecomando Slide';
+const WRITE_TIMEOUT_MS = 5000;
+// Il Mac si annuncia come "Telecomando Slide XXXX" (codice breve per distinguere più Mac).
+const NAME_PREFIX = 'Telecomando Slide';
 
 export function isBluetoothSupported() {
   return typeof navigator !== 'undefined' && Boolean(navigator.bluetooth);
@@ -23,6 +25,7 @@ export function createBleTransport({ onBytes, onStatus }) {
   let retryIndex = 0;
   let retryTimer = null;
   let closedByUser = false;
+  let attaching = null;
 
   const handleValue = (event) => {
     const view = event.target.value;
@@ -32,7 +35,16 @@ export function createBleTransport({ onBytes, onStatus }) {
     if (result.message) onBytes(result.message);
   };
 
-  async function attach() {
+  /** Un solo collegamento alla volta: chiamate ripetute aspettano quello in corso. */
+  function attach() {
+    if (!attaching) {
+      attaching = doAttach().finally(() => { attaching = null; });
+    }
+    return attaching;
+  }
+
+  async function doAttach() {
+    if (device.gatt.connected && commandChar) return;
     onStatus('connecting');
     const server = await device.gatt.connect();
     const service = await server.getPrimaryService(SERVICE_UUID);
@@ -81,7 +93,7 @@ export function createBleTransport({ onBytes, onStatus }) {
     try {
       if (!device) {
         device = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [SERVICE_UUID] }, { name: DEVICE_NAME }],
+          filters: [{ services: [SERVICE_UUID] }, { namePrefix: NAME_PREFIX }],
           optionalServices: [SERVICE_UUID],
         });
         device.addEventListener('gattserverdisconnected', onDisconnected);
@@ -98,7 +110,7 @@ export function createBleTransport({ onBytes, onStatus }) {
 
   /** Riprova subito (es. quando la pagina torna visibile). */
   function reconnectNow() {
-    if (!device || closedByUser || device.gatt.connected) return;
+    if (!device || closedByUser || device.gatt.connected || attaching) return;
     retryIndex = 0;
     scheduleRetry();
   }
@@ -106,7 +118,7 @@ export function createBleTransport({ onBytes, onStatus }) {
   function send(text) {
     const job = writeChain.then(() => {
       if (!commandChar) throw new Error('Non collegato');
-      return commandChar.writeValueWithResponse(encoder.encode(text));
+      return withTimeout(commandChar.writeValueWithResponse(encoder.encode(text)), WRITE_TIMEOUT_MS);
     });
     writeChain = job.catch(() => undefined);
     return job;
@@ -124,6 +136,14 @@ export function createBleTransport({ onBytes, onStatus }) {
   }
 
   return { connect, reconnectNow, send, disconnect };
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Il Mac non ha risposto in tempo')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function describeError(error) {

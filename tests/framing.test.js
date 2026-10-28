@@ -63,6 +63,7 @@ test('addFrame non modifica i buffer ricevuti', () => {
 });
 
 test('frame non validi vengono ignorati', () => {
+  assert.equal(parseFrame(new Uint8Array([1, 0, 0, 0x10, 0x01])), null, 'oltre il massimo di frame');
   assert.equal(parseFrame(new Uint8Array([1, 2])), null);
   assert.equal(parseFrame(new Uint8Array([1, 0, 5, 0, 2])), null, 'indice oltre il totale');
   assert.equal(parseFrame(new Uint8Array([1, 0, 0, 0, 0])), null, 'totale zero');

@@ -2,7 +2,10 @@ import AppKit
 
 /// App da barra dei menu: nessuna finestra fissa, nessun avvio automatico al login.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let controller = Controller()
+    private let controller = Controller(
+        bridge: PowerPointBridge(),
+        link: BLEPeripheral(advertisedName: AppInfo.advertisedName)
+    )
     private var statusItem: NSStatusItem?
     private var qrWindow: QRWindowController?
 
@@ -10,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let slideItem = AppDelegate.infoItem()
     private let problemItem = AppDelegate.infoItem()
     private let pinItem = AppDelegate.infoItem()
+    private let nameItem = AppDelegate.infoItem("Nome sul telefono: \(AppInfo.advertisedName)")
+    private lazy var encryptedItem = actionItem("Collegamento cifrato (abbinamento Bluetooth)", #selector(toggleEncrypted))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isAlreadyRunning() else {
@@ -35,8 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         [bluetoothItem, slideItem, problemItem].forEach(menu.addItem)
         menu.addItem(.separator())
         menu.addItem(pinItem)
+        menu.addItem(nameItem)
         menu.addItem(actionItem("Mostra QR e codice per il telefono…", #selector(showQR)))
-        menu.addItem(actionItem("Genera un nuovo codice", #selector(newPIN)))
+        menu.addItem(actionItem("Genera un nuovo codice (scollega i telefoni)", #selector(newPIN)))
+        menu.addItem(.separator())
+        menu.addItem(encryptedItem)
         menu.addItem(.separator())
         menu.addItem(actionItem("Esci", #selector(quit), key: "q"))
         return menu
@@ -50,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         problemItem.title = snapshot.problem.map { "⚠️ \($0)" } ?? ""
         problemItem.isHidden = snapshot.problem == nil
         pinItem.title = "Codice per il telefono: \(snapshot.pin)"
+        encryptedItem.state = snapshot.encrypted ? .on : .off
         qrWindow?.update(pin: snapshot.pin)
     }
 
@@ -88,6 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newPIN() {
         controller.regeneratePIN()
+    }
+
+    @objc private func toggleEncrypted() {
+        controller.setEncrypted(!controller.snapshot.encrypted)
     }
 
     @objc private func quit() {

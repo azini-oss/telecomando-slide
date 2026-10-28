@@ -3,6 +3,7 @@ import Foundation
 /// Comandi che il telefono può inviare. Tutto ciò che non è in questo elenco viene scartato.
 enum Command: Equatable {
     case hello(pin: String)
+    case resume(token: String)
     case next
     case previous
     case first
@@ -32,6 +33,8 @@ enum Command: Equatable {
         case ("reload", nil): self = .reload
         case ("hello", let pin?) where PairingGate.isWellFormed(pin):
             self = .hello(pin: pin)
+        case ("resume", let token?) where TokenStore.isWellFormed(token):
+            self = .resume(token: token)
         case ("goto", let value?):
             guard value.allSatisfy(\.isASCII), let slide = Int(value), (1...Self.maxSlide).contains(slide) else {
                 return nil
@@ -46,6 +49,7 @@ enum Command: Equatable {
     var wireText: String {
         switch self {
         case .hello(let pin): return "hello:\(pin)"
+        case .resume(let token): return "resume:\(token)"
         case .next: return "next"
         case .previous: return "prev"
         case .first: return "first"
@@ -54,6 +58,13 @@ enum Command: Equatable {
         case .stop: return "stop"
         case .black: return "black"
         case .reload: return "reload"
+        }
+    }
+
+    var isNavigation: Bool {
+        switch self {
+        case .next, .previous, .first, .goTo, .start, .stop: return true
+        default: return false
         }
     }
 }

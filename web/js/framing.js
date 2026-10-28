@@ -2,6 +2,8 @@
 // Stesso formato dell'app Mac (mac/Sources/Framing.swift), verificato con shared/framing-vectors.json.
 
 export const HEADER_SIZE = 5;
+// Stesso limite del Mac (BLEPeripheral.maxFramesPerMessage): tiene limitato il lavoro di riassemblaggio.
+export const MAX_FRAMES = 4096;
 const MAX_PENDING = 4;
 
 export function encodeFrames(bytes, messageId, maxFrameSize) {
@@ -20,7 +22,7 @@ export function parseFrame(frame) {
   if (!(frame instanceof Uint8Array) || frame.length < HEADER_SIZE) return null;
   const index = (frame[1] << 8) | frame[2];
   const total = (frame[3] << 8) | frame[4];
-  if (total === 0 || index >= total) return null;
+  if (total === 0 || total > MAX_FRAMES || index >= total) return null;
   return { messageId: frame[0], index, total, payload: frame.slice(HEADER_SIZE) };
 }
 

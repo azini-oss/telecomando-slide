@@ -1,11 +1,13 @@
 // Collega interfaccia, protocollo e Bluetooth (o la demo).
 import { createBleTransport, isBluetoothSupported } from './ble.js';
 import { createDemoTransport } from './demo.js';
-import { commands, decodeMessage, initialState, applyMessage, isValidPin } from './protocol.js';
+import { commands, decodeMessage, initialState, applyMessage, isValidPin, isValidToken } from './protocol.js';
 import { els, render, renderTimer, showToast } from './ui.js';
 
-const STORAGE = Object.freeze({ pin: 'ts.pin', prefs: 'ts.prefs' });
+const STORAGE = Object.freeze({ pin: 'ts.pin', token: 'ts.token', prefs: 'ts.prefs' });
 const FONT = Object.freeze({ min: 18, max: 64, step: 4, initial: 30 });
+const SILENCE_MS = 15000; // il Mac manda almeno un aggiornamento ogni 10 s
+const MAX_PENDING_NAV = 2;
 
 let model = Object.freeze({
   view: 'connect',
@@ -18,9 +20,15 @@ let model = Object.freeze({
   message: '',
   messageIsError: false,
   supported: isBluetoothSupported(),
+  macSilent: false,
+  lockedUntil: 0,
 });
 let transport = null;
 let wakeLock = null;
+let authMethod = null; // 'resume' | 'hello'
+let lastMessageAt = 0;
+let pendingNav = 0;
+let lockRetryTimer = null;
 
 function update(patch) {
   model = Object.freeze({ ...model, ...patch });
@@ -33,24 +41,57 @@ function update(patch) {
 function onBytes(bytes) {
   const message = decodeMessage(bytes);
   if (!message) return;
+  lastMessageAt = Date.now();
   const protocol = applyMessage(model.protocol, message);
 
-  if (message.t === 'auth' && message.ok) {
-    if (!model.demo) writeStorage(STORAGE.pin, model.pin);
-    update({ protocol, paired: true, view: 'remote', message: '', messageIsError: false });
-    return;
-  }
   if (message.t === 'auth') {
-    transport?.disconnect();
-    if (!model.demo) removeStorage(STORAGE.pin);
-    const text = protocol.auth === 'locked'
-      ? `Troppi tentativi: riprova tra ${protocol.retryIn} secondi.`
-      : 'Codice errato: controlla il menu di Telecomando Slide sul Mac.';
-    update({ protocol, paired: false, view: 'connect', message: text, messageIsError: true });
+    handleAuth(message, protocol);
     return;
   }
   if (message.t === 'err') showToast(message.msg);
-  update({ protocol });
+  update({ protocol, macSilent: false });
+}
+
+function handleAuth(message, protocol) {
+  if (message.ok) {
+    if (!model.demo) {
+      writeStorage(STORAGE.pin, model.pin);
+      if (isValidToken(message.token)) writeStorage(STORAGE.token, message.token);
+    }
+    update({ protocol, paired: true, view: 'remote', message: '', messageIsError: false, lockedUntil: 0, macSilent: false });
+    return;
+  }
+  if (authMethod === 'resume') {
+    // Riconnessione non più valida (es. codice cambiato sul Mac): si riprova col codice.
+    removeStorage(STORAGE.token);
+    if (isValidPin(model.pin)) {
+      sendAuth('hello');
+      return;
+    }
+  }
+  if (protocol.auth === 'locked') {
+    // Bloccato per tentativi altrui: si tiene il codice e si riprova da soli.
+    const lockedUntil = Date.now() + protocol.retryIn * 1000;
+    update({ protocol, lockedUntil, message: `Il Mac ha bloccato i tentativi: riprovo tra ${protocol.retryIn} secondi.`, messageIsError: true });
+    clearTimeout(lockRetryTimer);
+    lockRetryTimer = setTimeout(() => {
+      if (model.conn === 'connected') sendAuth('hello');
+    }, protocol.retryIn * 1000 + 500);
+    return;
+  }
+  // Codice sbagliato: si dimentica anche il Mac scelto, così al prossimo tentativo si può sceglierne un altro.
+  if (!model.demo) removeStorage(STORAGE.pin);
+  transport?.disconnect({ forget: true });
+  update({
+    protocol, paired: false, view: 'connect',
+    message: 'Codice errato (o Mac sbagliato): controlla il menu di Telecomando Slide sul Mac.', messageIsError: true,
+  });
+}
+
+function sendAuth(method) {
+  const token = readStorage(STORAGE.token);
+  authMethod = method === 'resume' && isValidToken(token) && !model.demo ? 'resume' : 'hello';
+  sendCommand(authMethod === 'resume' ? commands.resume(token) : commands.hello(model.pin));
 }
 
 function onStatus(status, detail) {
@@ -59,8 +100,9 @@ function onStatus(status, detail) {
       update({ conn: 'connecting', message: model.paired ? '' : 'Collegamento in corso…', messageIsError: false });
       break;
     case 'connected':
-      update({ conn: 'connected' });
-      sendCommand(commands.hello(model.pin));
+      lastMessageAt = Date.now();
+      update({ conn: 'connected', macSilent: false });
+      sendAuth('resume');
       break;
     case 'reconnecting':
       update({ conn: 'reconnecting' });
@@ -93,14 +135,23 @@ function connect(pin, { demo = false } = {}) {
 }
 
 function sendCommand(text) {
-  if (!transport) return;
-  transport.send(text).catch(() => showToast('Comando non arrivato al Mac'));
+  if (!transport) return Promise.resolve();
+  return transport.send(text).catch(() => showToast('Comando non arrivato al Mac'));
+}
+
+/** Avanti/indietro: tocchi in eccesso mentre il Mac è lento vengono scartati, non accumulati. */
+function sendNav(text) {
+  if (pendingNav >= MAX_PENDING_NAV) return;
+  pendingNav += 1;
+  if (navigator.userActivation?.isActive) navigator.vibrate?.(10);
+  sendCommand(text).finally(() => { pendingNav -= 1; });
 }
 
 function disconnect() {
   transport?.disconnect({ forget: true });
   transport = null;
-  update({ paired: false, view: 'connect', conn: 'idle', protocol: initialState(), demo: false, message: '' });
+  clearTimeout(lockRetryTimer);
+  update({ paired: false, view: 'connect', conn: 'idle', protocol: initialState(), demo: false, message: '', macSilent: false });
 }
 
 function changeFont(delta) {
@@ -108,10 +159,6 @@ function changeFont(delta) {
   const prefs = Object.freeze({ ...model.prefs, fontSize });
   writeStorage(STORAGE.prefs, JSON.stringify(prefs));
   update({ prefs });
-}
-
-function haptic() {
-  navigator.vibrate?.(10);
 }
 
 // ---------- Eventi ----------
@@ -124,15 +171,14 @@ els.connectForm.addEventListener('submit', (event) => {
     els.pin.focus();
     return;
   }
+  if (pin !== readStorage(STORAGE.pin)) removeStorage(STORAGE.token);
   els.pin.blur();
   connect(pin);
 });
 els.demoBtn.addEventListener('click', () => connect('0000', { demo: true }));
 
-els.nextBtn.addEventListener('click', () => sendCommand(commands.next()));
-els.prevBtn.addEventListener('click', () => sendCommand(commands.prev()));
-els.nextBtn.addEventListener('pointerdown', haptic);
-els.prevBtn.addEventListener('pointerdown', haptic);
+els.nextBtn.addEventListener('click', () => sendNav(commands.next()));
+els.prevBtn.addEventListener('click', () => sendNav(commands.prev()));
 els.blackBtn.addEventListener('click', () => sendCommand(commands.black()));
 els.startBtn.addEventListener('click', () => sendCommand(commands.start()));
 els.bannerBtn.addEventListener('click', () => transport?.connect());
@@ -157,7 +203,7 @@ els.disconnectBtn.addEventListener('click', () => {
   disconnect();
 });
 els.slideList.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-slide]');
+  const button = event.target.closest('button[data-slide]:not(:disabled)');
   if (!button) return;
   sendCommand(commands.goTo(Number(button.dataset.slide)));
   els.menu.close();
@@ -166,15 +212,15 @@ els.slideList.addEventListener('click', (event) => {
 // Tastiera (utile anche con un telecomando/clicker collegato al telefono)
 document.addEventListener('keydown', (event) => {
   if (model.view !== 'remote' || els.menu.open || event.repeat) return;
-  const actions = {
-    ArrowRight: commands.next, PageDown: commands.next, ' ': commands.next,
-    ArrowLeft: commands.prev, PageUp: commands.prev,
-    b: commands.black, B: commands.black, '.': commands.black,
-  };
-  const action = actions[event.key];
-  if (!action) return;
-  event.preventDefault();
-  sendCommand(action());
+  const nav = { ArrowRight: commands.next, PageDown: commands.next, ' ': commands.next, ArrowLeft: commands.prev, PageUp: commands.prev };
+  const other = { b: commands.black, B: commands.black, '.': commands.black };
+  if (nav[event.key]) {
+    event.preventDefault();
+    sendNav(nav[event.key]());
+  } else if (other[event.key]) {
+    event.preventDefault();
+    sendCommand(other[event.key]());
+  }
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -183,7 +229,10 @@ document.addEventListener('visibilitychange', () => {
 });
 
 setInterval(() => {
-  if (model.view === 'remote') renderTimer(model);
+  if (model.view !== 'remote') return;
+  renderTimer(model);
+  const silent = model.paired && model.conn === 'connected' && Date.now() - lastMessageAt > SILENCE_MS;
+  if (silent !== model.macSilent) update({ macSilent: silent });
 }, 1000);
 
 // ---------- Schermo sempre acceso ----------

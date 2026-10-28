@@ -1,5 +1,6 @@
 // Cache dell'app per usarla anche senza rete (sale riunioni). Nessun dato utente passa da qui.
-const CACHE = 'telecomando-slide-v1';
+// __BUILD__ viene sostituito a ogni pubblicazione: ogni versione ha la sua cache, completa e coerente.
+const CACHE = 'telecomando-slide-__BUILD__';
 const ASSETS = [
   './',
   './index.html',
@@ -29,22 +30,13 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Prima la copia in cache (subito disponibile), intanto si aggiorna dalla rete.
+// Solo dalla cache della versione installata; le novità arrivano con il service worker successivo.
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
   event.respondWith(
-    caches.match(request, { ignoreSearch: true }).then((cached) => {
-      const network = fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached ?? network;
-    }),
+    caches.open(CACHE)
+      .then((cache) => cache.match(request, { ignoreSearch: true }))
+      .then((cached) => cached ?? fetch(request)),
   );
 });
