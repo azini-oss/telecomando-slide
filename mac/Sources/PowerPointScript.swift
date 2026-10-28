@@ -279,6 +279,20 @@ enum PowerPointScript {
     	return true
     end startfrom
 
+    -- Miniature: PowerPoint (in sandbox) esporta un PDF nel proprio contenitore. Le slide nascoste
+    -- non vengono esportate. Funziona solo con presentazioni già salvate almeno una volta.
+    on exportpdf(target)
+    	my ensurerunning()
+    	tell application id "com.microsoft.Powerpoint"
+    		with timeout of 90 seconds
+    			set p to my currentpresentation()
+    			if p is missing value then error "Nessuna presentazione aperta" number 1003
+    			save p in (POSIX file target) as save as PDF
+    			return my deckkey(p)
+    		end timeout
+    	end tell
+    end exportpdf
+
     -- Per tornare prima della slide di partenza bisogna chiudere e riavviare la presentazione.
     on restartfrom(n)
     	my endshow()

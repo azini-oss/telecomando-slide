@@ -16,7 +16,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 -target arm64-apple-macos13.0 \
-  -framework AppKit -framework CoreBluetooth -framework CoreImage \
+  -framework AppKit -framework CoreBluetooth -framework CoreImage -framework PDFKit \
   Sources/*.swift \
   -o "$APP/Contents/MacOS/TelecomandoSlide"
 

@@ -38,9 +38,12 @@ export const commands = Object.freeze({
   stop: () => 'stop',
   black: () => 'black',
   reload: () => 'reload',
+  thumbs: () => 'thumbs',
 });
 
-const KNOWN_TYPES = new Set(['state', 'deck', 'auth', 'err']);
+const KNOWN_TYPES = new Set(['state', 'deck', 'auth', 'err', 'thumb', 'thumbs']);
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const MAX_THUMB_CHARS = 60_000; // il Mac le tiene sotto i 30 KB (≈ 40 000 caratteri in base64)
 
 export function decodeMessage(bytes) {
   try {
@@ -60,6 +63,22 @@ export function initialState() {
     show: null,
     showReceivedAt: 0,
     error: null,
+    thumbs: Object.freeze({ key: null, images: Object.freeze({}) }),
+    thumbsStatus: null,
+  });
+}
+
+function addThumb(state, message) {
+  const valid = Number.isInteger(message.id) && typeof message.jpg === 'string'
+    && message.jpg.length <= MAX_THUMB_CHARS && BASE64.test(message.jpg);
+  if (!valid) return state;
+  const images = message.key === state.thumbs.key ? state.thumbs.images : {};
+  return Object.freeze({
+    ...state,
+    thumbs: Object.freeze({
+      key: message.key,
+      images: Object.freeze({ ...images, [message.id]: `data:image/jpeg;base64,${message.jpg}` }),
+    }),
   });
 }
 
@@ -83,6 +102,13 @@ export function applyMessage(state, message, now = Date.now()) {
     }
     case 'err':
       return Object.freeze({ ...state, error: Object.freeze({ msg: message.msg, at: now }) });
+    case 'thumb':
+      return addThumb(state, message);
+    case 'thumbs':
+      return Object.freeze({
+        ...state,
+        thumbsStatus: Object.freeze({ key: message.key, status: message.status, total: message.total ?? 0 }),
+      });
     default:
       return state;
   }
@@ -125,6 +151,19 @@ export function nextVisibleSlide(state) {
   const start = state.show.running ? state.show.slide : 0;
   const offset = slides.slice(start).findIndex((s) => !s.hidden);
   return offset === -1 ? null : { ...slides[start + offset], index: start + offset + 1 };
+}
+
+/** Miniatura di una slide (data URL) se appartiene alla presentazione mostrata. */
+export function thumbFor(state, slideId) {
+  if (!slideId || !state.deck || state.thumbs.key !== state.deck.key) return null;
+  return state.thumbs.images[slideId] ?? null;
+}
+
+/** null se non richieste; altrimenti { status, received, total }. */
+export function thumbProgress(state) {
+  if (!state.thumbsStatus) return null;
+  const received = state.thumbs.key === state.thumbsStatus.key ? Object.keys(state.thumbs.images).length : 0;
+  return { status: state.thumbsStatus.status, received, total: state.thumbsStatus.total };
 }
 
 export function slideTitle(slide, index) {

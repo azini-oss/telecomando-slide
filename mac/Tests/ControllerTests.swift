@@ -9,6 +9,7 @@ final class FakeBridge: PresentationBridge {
     var slideReads = 0
     var performed: [Command] = []
     var starts: [(slide: Int, restart: Bool)] = []
+    var exports = 0
     /// Prima slide raggiungibile: come PowerPoint quando la presentazione parte da un intervallo.
     var rangeStart = 1
 
@@ -45,6 +46,13 @@ final class FakeBridge: PresentationBridge {
         return .success(())
     }
 
+    /// Come PowerPoint: scrive davvero un file (il servizio controlla che sia nuovo).
+    func exportPDF(to url: URL) -> Result<String, BridgeError> {
+        exports += 1
+        try? Data("pdf finto".utf8).write(to: url)
+        return .success(state.key)
+    }
+
     func step(toward slide: Int, maxSteps: Int, stuck: Int) -> Result<JumpProgress, BridgeError> {
         guard !slides[slide - 1].hidden else { return .failure(.hiddenSlide) }
         if slide < state.slide && state.slide == rangeStart { return .failure(.beforeShowStart) }
@@ -52,6 +60,73 @@ final class FakeBridge: PresentationBridge {
         show(at: next)
         return .success(JumpProgress(slide: next, done: next == slide, stuck: 0))
     }
+}
+
+/// Una "miniatura" per pagina; le pagine sono quelle che PowerPoint esporterebbe (solo le visibili).
+struct FakeRenderer: ThumbnailRendering {
+    let pages: () -> Int
+    func render(pdf: URL, width: CGFloat, completion: @escaping ([Data]?) -> Void) {
+        completion((0..<pages()).map { Data([UInt8($0 + 1)]) })
+    }
+}
+
+func runThumbnailTests() {
+    let suite = "telecomando-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    let pdf = FileManager.default.temporaryDirectory.appendingPathComponent("telecomando-test-\(UUID().uuidString).pdf")
+    defer {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: pdf)
+    }
+    defaults.set("4821", forKey: Controller.Keys.pin)
+    var pending: [() -> Void] = []
+    func drain() {
+        while !pending.isEmpty { pending.removeFirst()() }
+    }
+
+    let bridge = FakeBridge() // 3 slide, la terza nascosta, proiettata la 1
+    var pages = 2
+    let link = FakeLink()
+    let controller = Controller(bridge: bridge, link: link, renderer: FakeRenderer(pages: { pages }),
+                                thumbnailPDF: pdf, defaults: defaults, schedule: { pending.append($0) })
+    controller.start()
+    let phone = UUID()
+    link.onSubscribe?(phone)
+    link.onCommand?(phone, "hello:4821")
+    drain()
+
+    // Ordine slide → pagine: solo le visibili
+    let deck = Deck(key: "k", name: "", slides: [
+        SlideInfo(title: "", notes: "", hidden: false, id: 1),
+        SlideInfo(title: "", notes: "", hidden: true, id: 2),
+        SlideInfo(title: "", notes: "", hidden: false, id: 3),
+    ])
+    check(ThumbnailService.slideIDs(forPages: 2, deck: deck) == [1, 3], "pagine = slide visibili")
+    check(ThumbnailService.slideIDs(forPages: 3, deck: deck) == [1, 2, 3], "pagine = tutte le slide")
+    check(ThumbnailService.slideIDs(forPages: 5, deck: deck) == nil, "pagine che non tornano: nessuna miniatura sbagliata")
+    check(Controller.thumbnailOrder(deck: deck, current: 2) == [2, 3, 1], "prima la proiettata e la successiva visibile")
+
+    link.onCommand?(phone, "thumbs")
+    check(link.messages(phone, "thumbs").last?["status"] as? String == "export", "avviso «esportazione» prima di occupare PowerPoint")
+    check(bridge.exports == 0, "esportazione rimandata al giro successivo")
+    drain()
+    check(bridge.exports == 1, "PowerPoint esporta una volta")
+    let thumbs = link.messages(phone, "thumb")
+    check(thumbs.map { $0["id"] as? Int } == [101, 102], "una miniatura per slide visibile, prima la proiettata")
+    check(thumbs.allSatisfy { $0["_bulk"] as? Bool == true }, "miniature in coda a bassa priorità")
+    check(link.messages(phone, "thumbs").last?["status"] as? String == "done", "fine miniature segnalata")
+    check(!FileManager.default.fileExists(atPath: pdf.path), "PDF temporaneo cancellato")
+
+    link.onCommand?(phone, "thumbs")
+    drain()
+    check(bridge.exports == 2 && link.messages(phone, "thumb").count == 4, "ogni richiesta riesporta (miniature sempre aggiornate)")
+
+    pages = 5
+    link.onCommand?(phone, "thumbs")
+    drain()
+    check(bridge.exports == 3, "terza esportazione")
+    check(link.messages(phone, "thumbs").last?["status"] as? String == "error", "pagine che non corrispondono: errore, non miniature sbagliate")
+    check((link.messages(phone, "err").last?["msg"] as? String ?? "").contains("non corrispondono"), "errore spiegato")
 }
 
 func runStartFromTests() {
@@ -107,8 +182,9 @@ final class FakeLink: PhoneLink {
     func start(encrypted: Bool) {}
     func restart(encrypted: Bool) {}
 
-    func send(_ payload: Data, to phone: UUID) -> Bool {
-        let message = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] ?? [:]
+    func send(_ payload: Data, to phone: UUID, bulk: Bool) -> Bool {
+        var message = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] ?? [:]
+        message["_bulk"] = bulk
         inbox[phone, default: []].append(message)
         return true
     }

@@ -26,8 +26,13 @@ final class BLEPeripheral: NSObject, PhoneLink, CBPeripheralManagerDelegate {
     private var manager: CBPeripheralManager?
     private var eventCharacteristic: CBMutableCharacteristic?
     private var subscribers: [UUID: CBCentral] = [:]
-    private var outboxes: [UUID: [Data]] = [:]
-    private var messageCounter: UInt8 = 0
+    /// Due code per telefono: `urgent` (stato, note, comandi) passa sempre prima di `bulk` (miniature).
+    private var urgent: [UUID: [Data]] = [:]
+    private var bulk: [UUID: [Data]] = [:]
+    /// ID dei messaggi in due spazi separati (0–127 urgenti, 128–255 miniature): un messaggio urgente
+    /// che si intercala a una miniatura non ne riusa mai l'ID.
+    private var urgentCounter: UInt8 = 0
+    private var bulkCounter: UInt8 = 0
 
     init(advertisedName: String) {
         self.advertisedName = advertisedName
@@ -48,40 +53,55 @@ final class BLEPeripheral: NSObject, PhoneLink, CBPeripheralManagerDelegate {
     }
 
     @discardableResult
-    func send(_ payload: Data, to phone: UUID) -> Bool {
+    func send(_ payload: Data, to phone: UUID, bulk isBulk: Bool) -> Bool {
         guard subscribers[phone] != nil else { return true }
-        messageCounter &+= 1
-        guard let frames = Framing.frames(for: payload, messageID: messageCounter,
+        let messageID: UInt8
+        if isBulk {
+            bulkCounter = (bulkCounter &+ 1) & 0x7F
+            messageID = 0x80 | bulkCounter
+        } else {
+            urgentCounter = (urgentCounter &+ 1) & 0x7F
+            messageID = urgentCounter
+        }
+        guard let frames = Framing.frames(for: payload, messageID: messageID,
                                           maxFrameSize: subscribers[phone]?.maximumUpdateValueLength ?? 20),
               frames.count <= Self.maxFramesPerMessage else {
             log.error("Messaggio troppo grande, non inviato (\(payload.count) byte)")
             return false
         }
-        let queue = (outboxes[phone] ?? []) + frames
+        let queue = ((isBulk ? bulk[phone] : urgent[phone]) ?? []) + frames
         guard queue.count <= Self.maxQueuedFrames else {
             log.error("Telefono troppo lento: coda svuotata")
-            outboxes[phone] = []
+            if isBulk { bulk[phone] = [] } else { urgent[phone] = [] }
             return true
         }
-        outboxes[phone] = queue
+        if isBulk { bulk[phone] = queue } else { urgent[phone] = queue }
         flush()
         return true
     }
 
-    /// Invia a turno un frame per telefono, così un telefono lento non blocca gli altri.
+    /// Invia a turno un frame per telefono (un telefono lento non blocca gli altri),
+    /// sempre prima i frame urgenti e poi quelli delle miniature.
     private func flush() {
         guard let manager, let characteristic = eventCharacteristic else { return }
         var progressed = true
         while progressed {
             progressed = false
-            for (phone, queue) in outboxes where !queue.isEmpty {
+            for phone in Set(urgent.keys).union(bulk.keys) {
                 guard let central = subscribers[phone] else {
-                    outboxes[phone] = nil
+                    urgent[phone] = nil
+                    bulk[phone] = nil
                     continue
                 }
+                let fromUrgent = !(urgent[phone] ?? []).isEmpty
+                guard let frame = fromUrgent ? urgent[phone]?.first : bulk[phone]?.first else { continue }
                 // false = coda di sistema piena: si riprende in peripheralManagerIsReady.
-                guard manager.updateValue(queue[0], for: characteristic, onSubscribedCentrals: [central]) else { return }
-                outboxes[phone] = Array(queue.dropFirst())
+                guard manager.updateValue(frame, for: characteristic, onSubscribedCentrals: [central]) else { return }
+                if fromUrgent {
+                    urgent[phone] = Array(urgent[phone]?.dropFirst() ?? [])
+                } else {
+                    bulk[phone] = Array(bulk[phone]?.dropFirst() ?? [])
+                }
                 progressed = true
             }
         }
@@ -102,7 +122,8 @@ final class BLEPeripheral: NSObject, PhoneLink, CBPeripheralManagerDelegate {
     private func dropAllSubscribers() {
         let phones = Array(subscribers.keys)
         subscribers = [:]
-        outboxes = [:]
+        urgent = [:]
+        bulk = [:]
         phones.forEach { onDisconnect?($0) }
     }
 
@@ -153,7 +174,8 @@ final class BLEPeripheral: NSObject, PhoneLink, CBPeripheralManagerDelegate {
 
     func peripheralManager(_ manager: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         subscribers[central.identifier] = nil
-        outboxes[central.identifier] = nil
+        urgent[central.identifier] = nil
+        bulk[central.identifier] = nil
         log.notice("Telefono scollegato")
         onDisconnect?(central.identifier)
     }

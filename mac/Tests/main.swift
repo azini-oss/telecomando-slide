@@ -118,6 +118,7 @@ check(!noIDs.isStale(for: state(slide: 2, slideID: 55)), "ID non disponibili: ne
 
 runControllerTests()
 runStartFromTests()
+runThumbnailTests()
 
 print("\(passed) ok, \(failures) falliti")
 exit(failures == 0 ? 0 : 1)

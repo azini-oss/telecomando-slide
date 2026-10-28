@@ -1,6 +1,7 @@
 // Disegno dell'interfaccia a partire dal modello. Solo textContent: le note non diventano mai HTML.
 import {
   currentSlide, nextVisibleSlide, slideTitle, elapsedSeconds, deckMatches, notesStatus, isShowEnded,
+  thumbFor, thumbProgress,
 } from './protocol.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,12 @@ export const els = Object.freeze({
   bannerText: $('banner-text'),
   bannerBtn: $('banner-btn'),
   notes: $('notes'),
+  notesText: $('notes-text'),
+  currentThumb: $('current-thumb'),
+  nextThumb: $('next-thumb'),
+  thumbsBtn: $('thumbs-btn'),
+  thumbsToggle: $('thumbs-toggle'),
+  thumbsIdleBtn: $('thumbs-idle-btn'),
   idle: $('idle'),
   idleText: $('idle-text'),
   startBtn: $('start-btn'),
@@ -46,11 +53,13 @@ export const els = Object.freeze({
 let lastNotesKey = '';
 let lastListDeck = null;
 let lastListCurrent = -1;
+let lastListThumbs = null;
 let toastTimer = null;
 
 export function render(model) {
   els.app.dataset.view = model.view;
   els.app.style.setProperty('--notes-size', `${model.prefs.fontSize}px`);
+  els.app.classList.toggle('no-thumbs', !model.prefs.showThumbs);
   renderConnect(model);
   if (model.view === 'remote') renderRemote(model);
 }
@@ -86,6 +95,7 @@ function renderRemote(model) {
   renderNotes(protocol, running);
   renderNext(protocol, running);
   renderTimer(model);
+  renderThumbControls(model, online);
 
   els.fontSize.textContent = String(model.prefs.fontSize);
   els.showToggle.textContent = running ? 'Termina presentazione' : 'Avvia dall’inizio';
@@ -133,12 +143,13 @@ function renderNotes(protocol, running) {
   const slide = currentSlide(protocol);
   const key = `${show.key}|${show.slide}|${status}|${slide?.notes ?? ''}`;
   if (slide) {
-    els.notes.textContent = slide.notes || 'Nessuna nota per questa slide.';
+    els.notesText.textContent = slide.notes || 'Nessuna nota per questa slide.';
     els.notes.classList.toggle('empty', !slide.notes);
   } else {
-    els.notes.textContent = NOTES_PLACEHOLDER[status] ?? '';
+    els.notesText.textContent = NOTES_PLACEHOLDER[status] ?? '';
     els.notes.classList.add('empty');
   }
+  setThumb(els.currentThumb, slide ? thumbFor(protocol, slide.id) : null);
   if (key !== lastNotesKey) {
     els.notes.scrollTop = 0;
     lastNotesKey = key;
@@ -160,12 +171,42 @@ function renderNext(protocol, running) {
   const text = !running || status === 'ended' || status === 'stale' || status === 'loading'
     ? '—'
     : next ? `${next.index}. ${slideTitle(next, next.index)}` : 'Fine presentazione';
+  setThumb(els.nextThumb, text !== '—' && next ? thumbFor(protocol, next.id) : null);
   if (els.nextTitle.textContent === text) return;
   els.nextTitle.textContent = text;
   updateMarquee();
 }
 
 window.addEventListener('resize', () => updateMarquee());
+
+/** Mostra la miniatura se c'è (data URL già validato dal protocollo), altrimenti la nasconde. */
+function setThumb(img, src) {
+  if (!src) {
+    img.hidden = true;
+    img.removeAttribute('src');
+    return;
+  }
+  if (img.getAttribute('src') !== src) img.src = src;
+  img.hidden = false;
+}
+
+function renderThumbControls(model, online) {
+  const progress = thumbProgress(model.protocol);
+  const busy = progress?.status === 'export' || progress?.status === 'sending';
+  const loaded = Object.keys(model.protocol.thumbs.images).length > 0 && model.protocol.thumbs.key === model.protocol.deck?.key;
+  const label = !progress ? 'Carica miniature'
+    : progress.status === 'export' ? 'Miniature: PowerPoint le sta esportando…'
+      : progress.status === 'sending' ? `Miniature: ${progress.received} di ${progress.total}…`
+        : progress.status === 'error' ? 'Riprova a caricare le miniature'
+          : 'Aggiorna miniature';
+  els.thumbsBtn.textContent = label;
+  els.thumbsBtn.disabled = !online || busy || !deckMatches(model.protocol);
+  els.thumbsIdleBtn.textContent = !progress || progress.status === 'error' ? 'Carica le miniature' : label;
+  els.thumbsIdleBtn.disabled = els.thumbsBtn.disabled;
+  els.thumbsIdleBtn.hidden = !model.protocol.show?.count || (loaded && !busy);
+  els.thumbsToggle.hidden = !loaded;
+  els.thumbsToggle.textContent = model.prefs.showThumbs ? 'Nascondi miniature' : 'Mostra miniature';
+}
 
 /** Titolo lungo: scorre avanti e indietro invece di essere troncato. */
 function updateMarquee() {
@@ -192,9 +233,10 @@ function renderSlideList(protocol) {
   const slides = protocol.deck?.slides ?? [];
   const current = protocol.show?.running ? protocol.show.slide : 0;
   // Si ridisegna quando arriva un deck nuovo (anche con la stessa chiave) o cambia la slide.
-  if (protocol.deck === lastListDeck && current === lastListCurrent) return;
+  if (protocol.deck === lastListDeck && current === lastListCurrent && protocol.thumbs === lastListThumbs) return;
   lastListDeck = protocol.deck;
   lastListCurrent = current;
+  lastListThumbs = protocol.thumbs;
 
   const items = slides.map((slide, i) => {
     const index = i + 1;
@@ -207,6 +249,8 @@ function renderSlideList(protocol) {
     if (index === current) button.setAttribute('aria-current', 'true');
     const num = Object.assign(document.createElement('span'), { className: 'num', textContent: String(index) });
     const title = Object.assign(document.createElement('span'), { className: 'title', textContent: slideTitle(slide, index) });
+    const src = thumbFor(protocol, slide.id);
+    if (src) button.append(Object.assign(document.createElement('img'), { className: 'thumb', src, alt: '' }));
     button.append(num, title);
     if (slide.hidden) button.append(Object.assign(document.createElement('span'), { className: 'tag', textContent: 'nascosta' }));
     li.append(button);

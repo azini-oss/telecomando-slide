@@ -13,6 +13,8 @@ import {
   notesStatus,
   slideTitle,
   elapsedSeconds,
+  thumbFor,
+  thumbProgress,
 } from '../web/js/protocol.js';
 
 const vectors = JSON.parse(readFileSync(new URL('../shared/command-vectors.json', import.meta.url), 'utf8'));
@@ -23,7 +25,7 @@ test('i comandi generati sono tutti accettati dal Mac', () => {
   const built = [
     commands.hello('4821'), commands.resume('0123456789abcdef0123456789abcdef'), commands.next(), commands.prev(),
     commands.first(), commands.goTo(7), commands.goTo(1), commands.start(), commands.startFrom(5),
-    commands.startFrom(1), commands.stop(), commands.black(), commands.reload(),
+    commands.startFrom(1), commands.stop(), commands.black(), commands.reload(), commands.thumbs(),
   ];
   for (const text of built) assert.ok(accepted.has(text), `${text} non è nei vettori validi`);
 });
@@ -128,6 +130,27 @@ test('stati delle note', () => {
   assert.equal(notesStatus(notRunning), 'idle');
   const ok = applyMessage(applyMessage(initialState(), deck, 0), show, 0);
   assert.equal(notesStatus(ok), 'ok');
+});
+
+test('miniature: associate a deck e slide, con avanzamento', () => {
+  const base = applyMessage(applyMessage(initialState(), deck, 0), show, 0);
+  const sending = applyMessage(base, { t: 'thumbs', key: 'k#3', status: 'sending', total: 2 });
+  const one = applyMessage(sending, { t: 'thumb', key: 'k#3', id: 11, jpg: '/9j/AAAA' });
+  assert.equal(sending.thumbs.images[11], undefined, 'lo stato precedente non cambia');
+  assert.equal(thumbFor(one, 11), 'data:image/jpeg;base64,/9j/AAAA');
+  assert.equal(thumbFor(one, 13), null);
+  assert.deepEqual(thumbProgress(one), { status: 'sending', received: 1, total: 2 });
+  const otherDeck = applyMessage(one, { ...deck, key: 'altro#3' });
+  assert.equal(thumbFor(otherDeck, 11), null, 'miniature di un\'altra presentazione non mostrate');
+  const reset = applyMessage(one, { t: 'thumb', key: 'nuovo#3', id: 12, jpg: '/9j/BBBB' });
+  assert.equal(Object.keys(reset.thumbs.images).length, 1, 'miniature di una chiave nuova ripartono da zero');
+});
+
+test('miniature: dati non validi scartati', () => {
+  const s = applyMessage(initialState(), { t: 'thumb', key: 'k', id: 1, jpg: '<script>' });
+  assert.equal(s.thumbs.images[1], undefined);
+  const big = applyMessage(initialState(), { t: 'thumb', key: 'k', id: 2, jpg: 'A'.repeat(200_000) });
+  assert.equal(big.thumbs.images[2], undefined);
 });
 
 test('titolo di ripiego per slide senza titolo', () => {

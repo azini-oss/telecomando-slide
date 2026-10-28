@@ -18,7 +18,15 @@ protocol PhoneLink: AnyObject {
     func start(encrypted: Bool)
     /// Ripubblica il servizio (es. cambio cifratura): i telefoni collegati vengono scollegati.
     func restart(encrypted: Bool)
+    /// `bulk`: priorità bassa (miniature), passa dopo stato e note.
     /// false se il messaggio è troppo grande per essere inviato.
     @discardableResult
-    func send(_ payload: Data, to phone: UUID) -> Bool
+    func send(_ payload: Data, to phone: UUID, bulk: Bool) -> Bool
+}
+
+extension PhoneLink {
+    @discardableResult
+    func send(_ payload: Data, to phone: UUID) -> Bool {
+        send(payload, to: phone, bulk: false)
+    }
 }

@@ -43,6 +43,8 @@ protocol PresentationBridge: AnyObject {
     /// `restart`: chiude la presentazione in corso e la riavvia da `slide`.
     func startShow(from slide: Int, restart: Bool) -> Result<Void, BridgeError>
     func step(toward slide: Int, maxSteps: Int, stuck: Int) -> Result<JumpProgress, BridgeError>
+    /// Esporta la presentazione corrente in PDF; restituisce la sua chiave.
+    func exportPDF(to url: URL) -> Result<String, BridgeError>
 }
 
 /// Legge lo stato e comanda PowerPoint tramite AppleScript eseguito in-process.
@@ -103,6 +105,11 @@ final class PowerPointBridge: PresentationBridge {
         }
     }
 
+    func exportPDF(to url: URL) -> Result<String, BridgeError> {
+        guard isRunning else { return .failure(.notRunning) }
+        return call("exportpdf", [NSAppleEventDescriptor(string: url.path)]).map { $0.stringValue ?? "" }
+    }
+
     // MARK: - Esecuzione
 
     private static func handler(for command: Command) -> String? {
@@ -113,7 +120,7 @@ final class PowerPointBridge: PresentationBridge {
         case .start: return "startshow"
         case .stop: return "endshow"
         case .black: return "toggleblack"
-        case .hello, .resume, .reload, .goTo, .startFrom: return nil
+        case .hello, .resume, .reload, .goTo, .startFrom, .thumbs: return nil
         }
     }
 

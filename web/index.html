@@ -63,16 +63,18 @@
           <span id="banner-text"></span>
           <button type="button" class="btn btn-small" id="banner-btn" hidden>Riconnetti</button>
         </div>
-        <article id="notes" class="notes" tabindex="0" aria-label="Note del relatore"></article>
+        <article id="notes" class="notes" tabindex="0" aria-label="Note del relatore"><img id="current-thumb" class="thumb current-thumb" alt="Slide proiettata" hidden><span id="notes-text"></span></article>
         <div id="idle" class="idle" hidden>
           <p id="idle-text" class="idle-text"></p>
           <button type="button" class="btn btn-primary" id="start-btn">Avvia dall’inizio</button>
           <button type="button" class="btn" id="start-from-btn">Scegli da che slide partire…</button>
+          <button type="button" class="btn btn-ghost" id="thumbs-idle-btn">Carica le miniature</button>
         </div>
       </main>
 
       <footer class="controls">
         <div class="next glass" id="next-box">
+          <img id="next-thumb" class="thumb next-thumb" alt="Slide successiva" hidden>
           <span class="next-label">Dopo</span>
           <span class="next-title" id="next-title-wrap"><span id="next-title"></span></span>
         </div>
@@ -103,6 +105,8 @@
       <div class="sheet-actions">
         <button type="button" class="sheet-item" id="show-toggle">Avvia presentazione</button>
         <button type="button" class="sheet-item" id="reload-btn">Ricarica le note</button>
+        <button type="button" class="sheet-item" id="thumbs-btn">Carica miniature</button>
+        <button type="button" class="sheet-item" id="thumbs-toggle" hidden>Nascondi miniature</button>
         <button type="button" class="sheet-item danger" id="disconnect-btn">Disconnetti</button>
       </div>
       <h2 class="sheet-title" id="slide-list-title">Vai alla slide</h2>

@@ -11,6 +11,18 @@ enum SelfTest {
         printState(bridge)
         printDeck(bridge)
 
+        // Mai disturbare una presentazione in corso (potrebbe essere davanti al pubblico).
+        let showRunning = (try? bridge.readState().get())?.running ?? false
+        let wantsAction = navigate || CommandLine.arguments.contains("--selftest-thumbs")
+        if wantsAction && showRunning {
+            print("Presentazione in corso: niente esportazioni né navigazione. Chiudila e riprova.")
+            exit(1)
+        }
+
+        if CommandLine.arguments.contains("--selftest-thumbs") {
+            thumbnails(bridge)
+        }
+
         if navigate {
             let steps: [Command] = [.start, .first, .next, .next, .next, .previous, .goTo(slide: 3), .goTo(slide: 1), .black, .black]
             steps.forEach { run($0, bridge) }
@@ -48,6 +60,33 @@ enum SelfTest {
             }
         }
         return .failure(.jumpFailed)
+    }
+
+    /// Percorso completo delle miniature: esportazione PDF in PowerPoint, lettura e JPEG.
+    private static func thumbnails(_ bridge: PowerPointBridge) {
+        guard case .success(let info) = bridge.readDeckInfo(), info.count > 0,
+              case .success(let chunk) = bridge.readSlides(from: 1, to: info.count) else {
+            print("Miniature: presentazione non leggibile")
+            return
+        }
+        let deck = Deck(key: info.key, name: info.name, slides: chunk.slides)
+        let service = ThumbnailService(bridge: bridge, renderer: PDFThumbnailRenderer(), pdfURL: AppInfo.thumbnailPDFURL)
+        let started = Date()
+        var finished = false
+        service.load(deck: deck) { result in
+            switch result {
+            case .success(let batch):
+                let sizes = batch.images.values.map(\.count).sorted()
+                print("Miniature: \(batch.images.count) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s, da \(sizes.first ?? 0) a \(sizes.last ?? 0) byte")
+            case .failure(let error):
+                print("Miniature: ERRORE \(error.userMessage)")
+            }
+            print("PDF temporaneo rimasto: \(FileManager.default.fileExists(atPath: AppInfo.thumbnailPDFURL.path))")
+            finished = true
+        }
+        while !finished && Date().timeIntervalSince(started) < 120 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
     }
 
     private static func printDeck(_ bridge: PowerPointBridge) {

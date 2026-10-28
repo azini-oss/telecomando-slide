@@ -156,9 +156,19 @@ function disconnect() {
 
 function changeFont(delta) {
   const fontSize = Math.min(FONT.max, Math.max(FONT.min, model.prefs.fontSize + delta));
-  const prefs = Object.freeze({ ...model.prefs, fontSize });
+  savePrefs({ ...model.prefs, fontSize });
+}
+
+function savePrefs(next) {
+  const prefs = Object.freeze(next);
   writeStorage(STORAGE.prefs, JSON.stringify(prefs));
   update({ prefs });
+}
+
+/** Miniature: PowerPoint le esporta (qualche secondo), poi arrivano una alla volta. */
+function loadThumbnails() {
+  if (model.protocol.show?.running) showToast('PowerPoint resterà occupato qualche secondo mentre esporta le slide', 4000);
+  sendCommand(commands.thumbs()); // ogni volta il Mac fa riesportare le slide a PowerPoint
 }
 
 // ---------- Eventi ----------
@@ -185,6 +195,9 @@ els.prevBtn.addEventListener('click', () => {
 els.blackBtn.addEventListener('click', () => sendCommand(commands.black()));
 els.startBtn.addEventListener('click', () => sendCommand(commands.start()));
 els.startFromBtn.addEventListener('click', () => els.menu.showModal());
+els.thumbsIdleBtn.addEventListener('click', loadThumbnails);
+els.thumbsBtn.addEventListener('click', loadThumbnails);
+els.thumbsToggle.addEventListener('click', () => savePrefs({ ...model.prefs, showThumbs: !model.prefs.showThumbs }));
 
 /** Partita da una slide successiva: PowerPoint non torna indietro da solo, si spiega come fare. */
 function hintIfAtStartSlide() {
@@ -273,9 +286,12 @@ function loadPrefs() {
   try {
     const saved = JSON.parse(readStorage(STORAGE.prefs) ?? '{}');
     const fontSize = Number.isFinite(saved.fontSize) ? saved.fontSize : FONT.initial;
-    return Object.freeze({ fontSize: Math.min(FONT.max, Math.max(FONT.min, fontSize)) });
+    return Object.freeze({
+      fontSize: Math.min(FONT.max, Math.max(FONT.min, fontSize)),
+      showThumbs: saved.showThumbs !== false,
+    });
   } catch {
-    return Object.freeze({ fontSize: FONT.initial });
+    return Object.freeze({ fontSize: FONT.initial, showThumbs: true });
   }
 }
 

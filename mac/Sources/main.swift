@@ -1,7 +1,7 @@
 import AppKit
 
 let arguments = CommandLine.arguments
-if arguments.contains("--selftest") || arguments.contains("--selftest-nav") {
+if arguments.contains("--selftest") || arguments.contains("--selftest-nav") || arguments.contains("--selftest-thumbs") {
     SelfTest.run(navigate: arguments.contains("--selftest-nav"))
 }
 

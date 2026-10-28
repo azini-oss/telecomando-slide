@@ -108,6 +108,28 @@ struct AuthMessage: Encodable {
     static let rejected = AuthMessage(ok: false, retryIn: nil, token: nil)
 }
 
+/// Una miniatura (JPEG in base64), inviata con priorità bassa.
+struct ThumbMessage: Encodable {
+    let t = "thumb"
+    let key: String
+    let id: Int
+    let jpg: String
+
+    init(key: String, id: Int, jpeg: Data) {
+        self.key = key
+        self.id = id
+        jpg = jpeg.base64EncodedString()
+    }
+}
+
+/// Avanzamento delle miniature: "export" (PowerPoint esporta), "sending" (in arrivo), "done", "error".
+struct ThumbsStatusMessage: Encodable {
+    let t = "thumbs"
+    let key: String
+    let status: String
+    let total: Int
+}
+
 struct ErrorMessage: Encodable {
     let t = "err"
     let msg: String

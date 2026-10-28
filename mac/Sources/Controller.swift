@@ -43,6 +43,8 @@ final class Controller {
     private let log = Logger(subsystem: AppInfo.subsystem, category: "controller")
     private let bridge: PresentationBridge
     private let link: PhoneLink
+    private let thumbnails: ThumbnailService
+    private var thumbRequesters: Set<UUID> = []
     private let defaults: UserDefaults
     private let now: () -> Date
     private let schedule: (@escaping () -> Void) -> Void
@@ -75,12 +77,15 @@ final class Controller {
     init(
         bridge: PresentationBridge,
         link: PhoneLink,
+        renderer: ThumbnailRendering = PDFThumbnailRenderer(),
+        thumbnailPDF: URL = AppInfo.thumbnailPDFURL,
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         schedule: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.bridge = bridge
         self.link = link
+        thumbnails = ThumbnailService(bridge: bridge, renderer: renderer, pdfURL: thumbnailPDF, now: now)
         self.defaults = defaults
         self.now = now
         self.schedule = schedule
@@ -141,11 +146,11 @@ final class Controller {
         case .resume(let token): resume(token: token, phone: phone)
         default:
             guard trusted.contains(phone) else { return } // telefoni non autenticati: ignorati
-            execute(command)
+            execute(command, from: phone)
         }
     }
 
-    private func execute(_ command: Command) {
+    private func execute(_ command: Command, from phone: UUID) {
         if command.isNavigation { jumpTarget = nil }
         switch command {
         case .reload:
@@ -154,6 +159,8 @@ final class Controller {
             deckFailures = 0
             deckRetryAt = .distantPast
             refresh(force: true)
+        case .thumbs:
+            requestThumbnails(for: phone)
         case .goTo(let slide):
             startJump(to: slide)
         case .startFrom(let slide):
@@ -410,6 +417,61 @@ final class Controller {
         notify()
     }
 
+    // MARK: - Miniature (solo su richiesta del telefono)
+
+    private func requestThumbnails(for phone: UUID) {
+        guard let deck, !deck.slides.isEmpty, !deck.isStale(for: lastState) else {
+            send(ThumbsStatusMessage(key: lastState.key, status: "error", total: 0), to: phone)
+            send(ErrorMessage(msg: "Aspetta che le note siano caricate, poi riprova"), to: phone)
+            return
+        }
+        thumbRequesters.insert(phone)
+        guard !thumbnails.isBusy else { return }
+        send(ThumbsStatusMessage(key: deck.key, status: "export", total: 0), to: phone)
+        // Al giro successivo: l'avviso parte prima che PowerPoint resti occupato con l'esportazione.
+        schedule { [weak self] in
+            self?.thumbnails.load(deck: deck) { result in self?.thumbnailsLoaded(result, deck: deck) }
+        }
+    }
+
+    private func thumbnailsLoaded(_ result: Result<ThumbnailService.Batch, ThumbnailError>, deck: Deck) {
+        let phones = thumbRequesters.filter(trusted.contains)
+        thumbRequesters = []
+        switch result {
+        case .success(let batch):
+            sendThumbnails(batch, deck: deck, to: phones)
+        case .failure(.busy):
+            break
+        case .failure(let error):
+            log.error("Miniature non riuscite: \(error.userMessage, privacy: .public)")
+            phones.forEach { phone in
+                send(ThumbsStatusMessage(key: deck.key, status: "error", total: 0), to: phone)
+                send(ErrorMessage(msg: error.userMessage), to: phone)
+            }
+        }
+    }
+
+    private func sendThumbnails(_ batch: ThumbnailService.Batch, deck: Deck, to phones: Set<UUID>) {
+        let ids = Self.thumbnailOrder(deck: deck, current: lastState.slide).filter { batch.images[$0] != nil }
+        for phone in phones {
+            send(ThumbsStatusMessage(key: batch.key, status: "sending", total: ids.count), to: phone)
+            for id in ids {
+                guard let jpeg = batch.images[id] else { continue }
+                send(ThumbMessage(key: batch.key, id: id, jpeg: jpeg), to: phone, bulk: true)
+            }
+            // Anche "fatto" in coda bassa: arriva dopo l'ultima miniatura.
+            send(ThumbsStatusMessage(key: batch.key, status: "done", total: ids.count), to: phone, bulk: true)
+        }
+    }
+
+    /// Prima la slide proiettata e la successiva, poi le altre in ordine.
+    static func thumbnailOrder(deck: Deck, current: Int) -> [Int] {
+        let ids = deck.slides.map(\.id)
+        guard current >= 1, current <= ids.count else { return ids }
+        let firsts = [ids[current - 1]] + (deck.slides.dropFirst(current).first { !$0.hidden }.map { [$0.id] } ?? [])
+        return firsts + ids.filter { !firsts.contains($0) }
+    }
+
     // MARK: - Invio
 
     @discardableResult
@@ -418,9 +480,9 @@ final class Controller {
     }
 
     @discardableResult
-    private func send<T: Encodable>(_ message: T, to phone: UUID) -> Bool {
+    private func send<T: Encodable>(_ message: T, to phone: UUID, bulk: Bool = false) -> Bool {
         guard let data = MessageEncoder.encode(message) else { return false }
-        return link.send(data, to: phone)
+        return link.send(data, to: phone, bulk: bulk)
     }
 
     private func notify() {

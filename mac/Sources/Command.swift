@@ -13,6 +13,7 @@ enum Command: Equatable {
     case stop
     case black
     case reload
+    case thumbs
 
     static let maxLength = 64
     static let maxSlide = 9_999
@@ -32,6 +33,7 @@ enum Command: Equatable {
         case ("stop", nil): self = .stop
         case ("black", nil): self = .black
         case ("reload", nil): self = .reload
+        case ("thumbs", nil): self = .thumbs
         case ("hello", let pin?) where PairingGate.isWellFormed(pin):
             self = .hello(pin: pin)
         case ("resume", let token?) where TokenStore.isWellFormed(token):
@@ -66,6 +68,7 @@ enum Command: Equatable {
         case .stop: return "stop"
         case .black: return "black"
         case .reload: return "reload"
+        case .thumbs: return "thumbs"
         }
     }
 

@@ -6,6 +6,8 @@
   { "text": "stop", "expect": "stop" },
   { "text": "black", "expect": "black" },
   { "text": "reload", "expect": "reload" },
+  { "text": "thumbs", "expect": "thumbs" },
+  { "text": "thumbs:1", "expect": null },
   { "text": "hello:4821", "expect": "hello:4821" },
   { "text": "  next \n", "expect": "next" },
   { "text": "goto:7", "expect": "goto:7" },

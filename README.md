@@ -37,6 +37,12 @@ Comportamento:
   all'ultima»: l'app lo imposta, avvia e rimette subito le impostazioni della presentazione com'erano.
   Da lì Indietro non va prima della slide N; scegliendo dall'elenco una slide precedente, l'app
   chiude e riavvia la presentazione da quella (si vede per un attimo).
+- **Miniature**: *Carica le miniature* (schermata d'attesa) o menu ⋯ → *Carica miniature*.
+  PowerPoint esporta la presentazione in PDF (1–3 secondi, meglio prima di iniziare), l'app ne
+  ricava miniature leggere e le manda al telefono una alla volta (prima la slide proiettata e la
+  successiva); il cambio slide ha sempre la precedenza. Le vedi nelle note (slide proiettata), nel
+  riquadro «Dopo» e nell'elenco. *Aggiorna miniature* le riesporta dopo una modifica; *Nascondi
+  miniature* lascia più spazio alle note. La presentazione deve essere salvata almeno una volta.
 - Se riordini, aggiungi o togli slide mentre sei collegato, le note si rileggono da sole.
 - Il salto a una slide avanza/arretra a piccoli passi (PowerPoint per Mac non accetta il salto
   diretto da AppleScript): con molte animazioni intermedie può richiedere un istante.
@@ -59,7 +65,7 @@ Pensata per non assomigliare in nulla a un malware e per essere verificabile:
 | Firma | Ad-hoc con **runtime rinforzato** (`codesign --options runtime`), senza Team ID (nessun account sviluppatore Apple). Unico entitlement: `com.apple.security.automation.apple-events`. |
 | Rete | **Nessuna.** Niente socket, server, connessioni Internet. Solo Bluetooth LE (servizio GATT dedicato). |
 | Automazione | Apple Events **solo a Microsoft PowerPoint** (avanti/indietro/avvio/fine/schermo nero, lettura di titoli e note). Compare in Privacy › Automazione. Niente System Events, niente simulazione di tastiera, niente Accessibilità. |
-| File | Non legge né scrive file. Nelle preferenze (`UserDefaults`) salva solo codice di accoppiamento, token di riconnessione e opzioni. |
+| File | Nelle preferenze (`UserDefaults`) salva solo codice di accoppiamento, token di riconnessione e opzioni. Solo quando il telefono chiede le miniature: PowerPoint (in sandbox, può scrivere solo lì) esporta un PDF in `~/Library/Containers/com.microsoft.Powerpoint/Data/telecomando-slide-miniature.pdf`; l'app lo legge e lo cancella subito. macOS può chiedere il permesso «accedere ai dati di altre app». Nessun altro file. |
 | Avvio | Solo manuale. Nessun LaunchAgent, nessun elemento di login, nessuna persistenza. |
 | Bluetooth | Comandi accettati solo dopo il codice a 4 cifre (o un token di riconnessione da 128 bit). Blocchi crescenti dopo 5 errori, codice nuovo automatico dopo 20. Testo dei comandi validato su un elenco chiuso. Cifratura opzionale tramite abbinamento di sistema. |
 | Pagina telefono | Statica (HTML/JS/CSS), nessun server, nessun dato inviato in rete. Le note viaggiano solo via Bluetooth tra telefono e Mac. Pubblicazione con azioni GitHub fissate a commit precisi. |
@@ -88,11 +94,13 @@ Verifica del collegamento con PowerPoint senza Bluetooth (agisce sulla presentaz
 "$HOME/Applications/Telecomando Slide.app/Contents/MacOS/TelecomandoSlide" --selftest
 ```
 
-`--selftest-nav` in più avvia la presentazione attiva e prova avanti/indietro/salto/nero: usalo
-solo con una presentazione di prova in primo piano.
+`--selftest-nav` in più avvia la presentazione attiva e prova avanti/indietro/salto/nero;
+`--selftest-thumbs` prova l'esportazione delle miniature. Entrambi si rifiutano se c'è una
+presentazione in corso: usali solo con una presentazione di prova in primo piano.
 
 Protocollo: il telefono scrive comandi testuali brevi (`hello:1234`, `resume:<token>`, `next`, `prev`, `first`,
-`goto:N`, `start`, `start:N`, `stop`, `black`, `reload`); il Mac risponde con messaggi JSON
-(`state`, `deck`, `auth`, `err`) divisi in frame `[id u8][indice u16][totale u16][dati]`.
+`goto:N`, `start`, `start:N`, `stop`, `black`, `reload`, `thumbs`); il Mac risponde con messaggi JSON
+(`state`, `deck`, `auth`, `err`, `thumb`, `thumbs`) divisi in frame `[id u8][indice u16][totale u16][dati]`.
+Le miniature viaggiano in una coda a bassa priorità con ID 128–255, gli altri messaggi con ID 0–127.
 La pagina si pubblica da sola su GitHub Pages a ogni push su `main` (`.github/workflows/pages.yml`).
 Modalità demo senza Mac: <https://azini-oss.github.io/telecomando-slide/?demo>
