@@ -31,6 +31,10 @@ export const commands = Object.freeze({
     return `goto:${slide}`;
   },
   start: () => 'start',
+  startFrom: (slide) => {
+    if (!Number.isInteger(slide) || slide < 1 || slide > MAX_SLIDE) throw new Error(`Slide non valida: ${slide}`);
+    return slide === 1 ? 'start' : `start:${slide}`;
+  },
   stop: () => 'stop',
   black: () => 'black',
   reload: () => 'reload',

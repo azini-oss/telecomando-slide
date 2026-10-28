@@ -25,6 +25,8 @@ export const els = Object.freeze({
   idle: $('idle'),
   idleText: $('idle-text'),
   startBtn: $('start-btn'),
+  startFromBtn: $('start-from-btn'),
+  slideListTitle: $('slide-list-title'),
   nextWrap: $('next-title-wrap'),
   nextTitle: $('next-title'),
   prevBtn: $('prev-btn'),
@@ -79,13 +81,15 @@ function renderRemote(model) {
   els.prevBtn.disabled = !running || !online;
   els.nextBtn.disabled = !running || !online;
   els.startBtn.disabled = !online;
+  els.startFromBtn.disabled = !online || !deckMatches(protocol);
 
   renderNotes(protocol, running);
   renderNext(protocol, running);
   renderTimer(model);
 
   els.fontSize.textContent = String(model.prefs.fontSize);
-  els.showToggle.textContent = running ? 'Termina presentazione' : 'Avvia presentazione';
+  els.showToggle.textContent = running ? 'Termina presentazione' : 'Avvia dall’inizio';
+  els.slideListTitle.textContent = running ? 'Vai alla slide' : 'Avvia dalla slide';
   els.showToggle.disabled = !online || !show?.count;
   els.reloadBtn.disabled = !online;
   renderSlideList(protocol);
@@ -119,7 +123,9 @@ function renderNotes(protocol, running) {
 
   if (!running) {
     els.idleText.textContent = idleText(protocol);
-    els.startBtn.hidden = !(show?.ppt && show.count > 0);
+    const canStart = Boolean(show?.ppt && show.count > 0);
+    els.startBtn.hidden = !canStart;
+    els.startFromBtn.hidden = !canStart || show.count < 2;
     return;
   }
 

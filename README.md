@@ -32,6 +32,11 @@ Comportamento:
 - Le note mostrate sono sempre quelle della slide che PowerPoint sta proiettando: se qualcuno
   cambia slide dal Mac, il telefono si aggiorna da solo.
 - Se modifichi le note mentre sei collegato: menu ⋯ → *Ricarica le note*.
+- **Partire da una slide**: a presentazione ferma, *Scegli da che slide partire…* (o menu ⋯ →
+  elenco «Avvia dalla slide»). PowerPoint per Mac lo permette solo come intervallo «dalla slide N
+  all'ultima»: l'app lo imposta, avvia e rimette subito le impostazioni della presentazione com'erano.
+  Da lì Indietro non va prima della slide N; scegliendo dall'elenco una slide precedente, l'app
+  chiude e riavvia la presentazione da quella (si vede per un attimo).
 - Se riordini, aggiungi o togli slide mentre sei collegato, le note si rileggono da sole.
 - Il salto a una slide avanza/arretra a piccoli passi (PowerPoint per Mac non accetta il salto
   diretto da AppleScript): con molte animazioni intermedie può richiedere un istante.
@@ -87,7 +92,7 @@ Verifica del collegamento con PowerPoint senza Bluetooth (agisce sulla presentaz
 solo con una presentazione di prova in primo piano.
 
 Protocollo: il telefono scrive comandi testuali brevi (`hello:1234`, `resume:<token>`, `next`, `prev`, `first`,
-`goto:N`, `start`, `stop`, `black`, `reload`); il Mac risponde con messaggi JSON
+`goto:N`, `start`, `start:N`, `stop`, `black`, `reload`); il Mac risponde con messaggi JSON
 (`state`, `deck`, `auth`, `err`) divisi in frame `[id u8][indice u16][totale u16][dati]`.
 La pagina si pubblica da sola su GitHub Pages a ogni push su `main` (`.github/workflows/pages.yml`).
 Modalità demo senza Mac: <https://azini-oss.github.io/telecomando-slide/?demo>

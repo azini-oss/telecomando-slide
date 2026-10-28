@@ -54,6 +54,8 @@ struct DeckInfo: Equatable {
 struct JumpProgress: Equatable {
     let slide: Int
     let done: Bool
+    /// Passi indietro senza cambio di slide, da ripassare al giro successivo.
+    let stuck: Int
 }
 
 // MARK: - Messaggi Mac → telefono (JSON)
@@ -68,8 +70,11 @@ struct StateMessage: Encodable {
     let elapsed: Double
     let key: String
     let slideId: Int
+    /// Slide da cui è partita la presentazione (0 = dall'inizio): prima di questa PowerPoint non torna.
+    let from: Int
 
-    init(_ state: PresentationState) {
+    init(_ state: PresentationState, from: Int = 0) {
+        self.from = from
         ppt = state.ppt
         running = state.running
         slide = state.slide

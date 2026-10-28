@@ -117,6 +117,7 @@ let noIDs = Deck(key: "a#5", name: "x", slides: (1...5).map { _ in SlideInfo(tit
 check(!noIDs.isStale(for: state(slide: 2, slideID: 55)), "ID non disponibili: nessun ricaricamento continuo")
 
 runControllerTests()
+runStartFromTests()
 
 print("\(passed) ok, \(failures) falliti")
 exit(failures == 0 ? 0 : 1)

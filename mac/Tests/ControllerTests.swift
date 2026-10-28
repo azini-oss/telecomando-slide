@@ -8,6 +8,14 @@ final class FakeBridge: PresentationBridge {
     var failSlideReads = 0
     var slideReads = 0
     var performed: [Command] = []
+    var starts: [(slide: Int, restart: Bool)] = []
+    /// Prima slide raggiungibile: come PowerPoint quando la presentazione parte da un intervallo.
+    var rangeStart = 1
+
+    func show(at slide: Int) {
+        state = PresentationState(ppt: true, running: true, slide: slide, count: slides.count, black: false,
+                                  elapsed: 0, key: state.key, slideID: slides[slide - 1].id)
+    }
 
     func readState() -> Result<PresentationState, BridgeError> { .success(state) }
 
@@ -29,13 +37,64 @@ final class FakeBridge: PresentationBridge {
         return .success(())
     }
 
-    func step(toward slide: Int, maxSteps: Int) -> Result<JumpProgress, BridgeError> {
-        guard !slides[slide - 1].hidden else { return .failure(.hiddenSlide) }
-        let next = state.slide < slide ? state.slide + 1 : state.slide - 1
-        state = PresentationState(ppt: true, running: true, slide: next, count: slides.count, black: false,
-                                  elapsed: 0, key: state.key, slideID: slides[next - 1].id)
-        return .success(JumpProgress(slide: next, done: next == slide))
+    func startShow(from slide: Int, restart: Bool) -> Result<Void, BridgeError> {
+        starts.append((slide: slide, restart: restart))
+        if state.running && !restart { return .failure(.alreadyRunning) }
+        rangeStart = slide
+        show(at: slide)
+        return .success(())
     }
+
+    func step(toward slide: Int, maxSteps: Int, stuck: Int) -> Result<JumpProgress, BridgeError> {
+        guard !slides[slide - 1].hidden else { return .failure(.hiddenSlide) }
+        if slide < state.slide && state.slide == rangeStart { return .failure(.beforeShowStart) }
+        let next = state.slide < slide ? state.slide + 1 : state.slide - 1
+        show(at: next)
+        return .success(JumpProgress(slide: next, done: next == slide, stuck: 0))
+    }
+}
+
+func runStartFromTests() {
+    let suite = "telecomando-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set("4821", forKey: Controller.Keys.pin)
+    var pending: [() -> Void] = []
+    func drain() {
+        while !pending.isEmpty { pending.removeFirst()() }
+    }
+
+    let bridge = FakeBridge()
+    bridge.slides = (1...5).map { SlideInfo(title: "T\($0)", notes: "N\($0)", hidden: false, id: 100 + $0) }
+    bridge.state = PresentationState(ppt: true, running: false, slide: 0, count: 5, black: false, elapsed: 0, key: "k#5", slideID: 0)
+    let link = FakeLink()
+    let controller = Controller(bridge: bridge, link: link, defaults: defaults, schedule: { pending.append($0) })
+    controller.start()
+    let phone = UUID()
+    link.onSubscribe?(phone)
+    link.onCommand?(phone, "hello:4821")
+    drain()
+
+    link.onCommand?(phone, "start:3")
+    drain()
+    check(bridge.starts.last?.slide == 3 && bridge.starts.last?.restart == false, "avvio dalla slide 3")
+    let started = link.messages(phone, "state").last
+    check(started?["slide"] as? Int == 3 && started?["from"] as? Int == 3, "il telefono sa da che slide è partita")
+
+    link.onCommand?(phone, "goto:5")
+    drain()
+    check(bridge.state.slide == 5 && bridge.starts.count == 1, "a presentazione avviata si salta senza riavviare")
+
+    link.onCommand?(phone, "goto:1")
+    drain()
+    check(bridge.starts.last?.slide == 1 && bridge.starts.last?.restart == true, "prima della partenza: riavvio dalla slide scelta")
+    check(bridge.state.slide == 1, "riavviata dalla slide 1")
+    check(link.messages(phone, "state").last?["from"] as? Int == 0, "riavviata dall'inizio: nessuna slide di partenza")
+    check(link.messages(phone, "err").isEmpty, "nessun errore mostrato per il riavvio")
+
+    link.onCommand?(phone, "start:2")
+    drain()
+    check(bridge.starts.count == 2 && bridge.state.slide == 2, "«avvia da» a presentazione già avviata = salto")
 }
 
 final class FakeLink: PhoneLink {

@@ -62,6 +62,9 @@ final class Controller {
     private var jumpTarget: Int?
     private var jumpGeneration = 0
     private var jumpRounds = 0
+    private var jumpStuck = 0
+    /// Slide da cui l'app ha avviato la presentazione (nil = dall'inizio).
+    private var showStart: Int?
     private var bridgeProblem: String?
     private var pairingProblem: String?
     private var pollTimer: Timer?
@@ -153,6 +156,16 @@ final class Controller {
             refresh(force: true)
         case .goTo(let slide):
             startJump(to: slide)
+        case .startFrom(let slide):
+            if lastState.running {
+                startJump(to: slide)
+            } else {
+                startShow(from: slide, restart: false)
+            }
+        case .start:
+            showStart = nil
+            if case .failure(let error) = bridge.perform(command) { report(error) }
+            refresh(force: true)
         default:
             if case .failure(let error) = bridge.perform(command) { report(error) }
             refresh(force: true)
@@ -232,20 +245,32 @@ final class Controller {
         notify()
     }
 
-    // MARK: - Salto a una slide (a passi brevi)
+    // MARK: - Avvio da una slide e salto (a passi brevi)
+
+    private func startShow(from slide: Int, restart: Bool) {
+        switch bridge.startShow(from: slide, restart: restart) {
+        case .success:
+            showStart = slide > 1 ? slide : nil
+        case .failure(let error):
+            report(error)
+        }
+        refresh(force: true)
+    }
 
     private func startJump(to slide: Int) {
         jumpGeneration += 1
         jumpTarget = slide
         jumpRounds = 0
+        jumpStuck = 0
         continueJump(jumpGeneration)
     }
 
     private func continueJump(_ generation: Int) {
         guard let target = jumpTarget, generation == jumpGeneration else { return }
-        switch bridge.step(toward: target, maxSteps: Timing.jumpStepsPerRound) {
+        switch bridge.step(toward: target, maxSteps: Timing.jumpStepsPerRound, stuck: jumpStuck) {
         case .success(let progress):
             jumpRounds += 1
+            jumpStuck = progress.stuck
             if progress.done {
                 jumpTarget = nil
             } else if jumpRounds >= Timing.maxJumpRounds {
@@ -254,6 +279,11 @@ final class Controller {
             } else {
                 schedule { [weak self] in self?.continueJump(generation) }
             }
+        case .failure(.beforeShowStart):
+            // Partita da una slide successiva: PowerPoint non torna indietro, si riavvia da quella voluta.
+            jumpTarget = nil
+            startShow(from: target, restart: true)
+            return
         case .failure(let error):
             jumpTarget = nil
             report(error)
@@ -290,9 +320,10 @@ final class Controller {
             bridgeProblem = nil
             let changed = state.differs(from: lastState)
             let heartbeatDue = now().timeIntervalSince(lastHeartbeat) >= Timing.heartbeat
+            if lastState.running && !state.running { showStart = nil } // presentazione chiusa
             lastState = state
             if changed || force || heartbeatDue {
-                broadcast(StateMessage(state))
+                broadcast(StateMessage(state, from: showStart ?? 0))
                 lastHeartbeat = now()
             }
             ensureDeck(for: state)

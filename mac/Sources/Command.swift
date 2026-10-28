@@ -9,6 +9,7 @@ enum Command: Equatable {
     case first
     case goTo(slide: Int)
     case start
+    case startFrom(slide: Int)
     case stop
     case black
     case reload
@@ -36,13 +37,19 @@ enum Command: Equatable {
         case ("resume", let token?) where TokenStore.isWellFormed(token):
             self = .resume(token: token)
         case ("goto", let value?):
-            guard value.allSatisfy(\.isASCII), let slide = Int(value), (1...Self.maxSlide).contains(slide) else {
-                return nil
-            }
+            guard let slide = Self.slideNumber(value) else { return nil }
             self = .goTo(slide: slide)
+        case ("start", let value?):
+            guard let slide = Self.slideNumber(value) else { return nil }
+            self = .startFrom(slide: slide)
         default:
             return nil
         }
+    }
+
+    private static func slideNumber(_ value: String) -> Int? {
+        guard value.allSatisfy(\.isASCII), let slide = Int(value), (1...maxSlide).contains(slide) else { return nil }
+        return slide
     }
 
     /// Forma testuale canonica, uguale a quella che invia il telefono.
@@ -55,6 +62,7 @@ enum Command: Equatable {
         case .first: return "first"
         case .goTo(let slide): return "goto:\(slide)"
         case .start: return "start"
+        case .startFrom(let slide): return "start:\(slide)"
         case .stop: return "stop"
         case .black: return "black"
         case .reload: return "reload"
@@ -63,7 +71,7 @@ enum Command: Equatable {
 
     var isNavigation: Bool {
         switch self {
-        case .next, .previous, .first, .goTo, .start, .stop: return true
+        case .next, .previous, .first, .goTo, .start, .startFrom, .stop: return true
         default: return false
         }
     }

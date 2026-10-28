@@ -66,7 +66,8 @@
         <article id="notes" class="notes" tabindex="0" aria-label="Note del relatore"></article>
         <div id="idle" class="idle" hidden>
           <p id="idle-text" class="idle-text"></p>
-          <button type="button" class="btn btn-primary" id="start-btn">Avvia presentazione</button>
+          <button type="button" class="btn btn-primary" id="start-btn">Avvia dall’inizio</button>
+          <button type="button" class="btn" id="start-from-btn">Scegli da che slide partire…</button>
         </div>
       </main>
 
@@ -104,7 +105,7 @@
         <button type="button" class="sheet-item" id="reload-btn">Ricarica le note</button>
         <button type="button" class="sheet-item danger" id="disconnect-btn">Disconnetti</button>
       </div>
-      <h2 class="sheet-title">Vai alla slide</h2>
+      <h2 class="sheet-title" id="slide-list-title">Vai alla slide</h2>
       <ol id="slide-list" class="slide-list"></ol>
       <button type="button" class="btn btn-block" id="menu-close">Chiudi</button>
     </div>

@@ -5,7 +5,8 @@
 enum PowerPointScript {
     static let source = """
     -- Errori propri: 1001 non avviata, 1002 slide inesistente, 1003 nessuna presentazione,
-    -- 1004 PowerPoint chiuso, 1005 slide nascosta, 1006 fine presentazione, 1007 salto non riuscito.
+    -- 1004 PowerPoint chiuso, 1005 slide nascosta, 1006 fine presentazione, 1007 salto non riuscito,
+    -- 1008 già avviata, 1009 slide prima di quella di partenza.
 
     on ensurerunning()
     	if not (application id "com.microsoft.Powerpoint" is running) then error "PowerPoint chiuso" number 1004
@@ -195,9 +196,11 @@ enum PowerPointScript {
     end gofirst
 
     -- "go to slide" non accetta la vista presentazione: si avanza/arretra di pochi passi per volta.
-    -- Restituisce {slide raggiunta, arrivato?}. La slide di arrivo non può essere nascosta, quindi
-    -- avanti/indietro (che saltano le nascoste) ci arrivano senza mai superarla.
-    on steptoward(n, maxsteps)
+    -- Restituisce {slide raggiunta, arrivato?, passi fermi}. La slide di arrivo non può essere nascosta,
+    -- quindi avanti/indietro (che saltano le nascoste) ci arrivano senza mai superarla.
+    -- `stuck` conta i passi indietro senza cambio di slide (animazioni annullate): oltre il numero di
+    -- animazioni della slide vuol dire che la presentazione è partita da lì e non si può tornare prima.
+    on steptoward(n, maxsteps, stuck)
     	my ensurerunning()
     	tell application id "com.microsoft.Powerpoint"
     		with timeout of 3 seconds
@@ -206,10 +209,12 @@ enum PowerPointScript {
     			if n < 1 or n > (count of slides of p) then error "Slide inesistente" number 1002
     			if hidden of slide show transition of slide n of p then error "Slide nascosta" number 1005
     			set idx to slide index of slide of v
-    			if idx = n then return {idx, true}
+    			if idx = n then return {idx, true, 0}
     			if n = 1 then
     				go to first slide v
-    				return {1, true}
+    				set idx to slide index of slide of v
+    				if idx = 1 then return {1, true, 0}
+    				error "Prima della slide di partenza" number 1009
     			end if
     			repeat maxsteps times
     				set previdx to idx
@@ -224,13 +229,74 @@ enum PowerPointScript {
     					my rethrowfatal(msg, e)
     					error "Fine presentazione raggiunta" number 1006
     				end try
-    				if idx = n then return {idx, true}
+    				if idx = n then return {idx, true, 0}
     				if (previdx < n and idx > n) or (previdx > n and idx < n) then error "Salto non riuscito" number 1007
+    				if idx = previdx and idx > n then
+    					set stuck to stuck + 1
+    					if stuck > (print steps of slide idx of p) then error "Prima della slide di partenza" number 1009
+    				else
+    					set stuck to 0
+    				end if
     			end repeat
-    			return {idx, false}
+    			return {idx, false, stuck}
     		end timeout
     	end tell
     end steptoward
+
+    -- Avvio da una slide: PowerPoint per Mac lo permette solo con un intervallo di slide (N…ultima).
+    -- Le impostazioni della presentazione vengono ripristinate subito: la presentazione in corso non ne
+    -- risente e il file resta com'era. Limite di PowerPoint: non si torna prima della slide di partenza.
+    on startfrom(n)
+    	my ensurerunning()
+    	tell application id "com.microsoft.Powerpoint"
+    		with timeout of 10 seconds
+    			if (count of slide show windows) > 0 then error "Presentazione già avviata" number 1008
+    			if (count of presentations) = 0 then error "Nessuna presentazione aperta" number 1003
+    			set p to active presentation
+    			set total to count of slides of p
+    			if n < 1 or n > total then error "Slide inesistente" number 1002
+    			if hidden of slide show transition of slide n of p then error "Slide nascosta" number 1005
+    			set ss to slide show settings of p
+    			if n = 1 then
+    				run slide show ss
+    				return true
+    			end if
+    			set oldrange to range type of ss
+    			set oldstart to starting slide of ss
+    			set oldend to ending slide of ss
+    			try
+    				set range type of ss to slide show range
+    				set ending slide of ss to total
+    				set starting slide of ss to n
+    				run slide show ss
+    			on error msg number e
+    				my restoresettings(ss, oldrange, oldstart, oldend)
+    				error msg number e
+    			end try
+    			my restoresettings(ss, oldrange, oldstart, oldend)
+    		end timeout
+    	end tell
+    	return true
+    end startfrom
+
+    -- Per tornare prima della slide di partenza bisogna chiudere e riavviare la presentazione.
+    on restartfrom(n)
+    	my endshow()
+    	delay 0.6
+    	return my startfrom(n)
+    end restartfrom
+
+    on restoresettings(ss, oldrange, oldstart, oldend)
+    	tell application id "com.microsoft.Powerpoint"
+    		with timeout of 3 seconds
+    			try
+    				set starting slide of ss to oldstart
+    				set ending slide of ss to oldend
+    				set range type of ss to oldrange
+    			end try
+    		end timeout
+    	end tell
+    end restoresettings
 
     on startshow()
     	my ensurerunning()

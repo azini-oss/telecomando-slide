@@ -22,10 +22,16 @@ const bytes = (obj) => new TextEncoder().encode(JSON.stringify(obj));
 test('i comandi generati sono tutti accettati dal Mac', () => {
   const built = [
     commands.hello('4821'), commands.resume('0123456789abcdef0123456789abcdef'), commands.next(), commands.prev(),
-    commands.first(), commands.goTo(7), commands.goTo(1), commands.start(), commands.stop(), commands.black(),
-    commands.reload(),
+    commands.first(), commands.goTo(7), commands.goTo(1), commands.start(), commands.startFrom(5),
+    commands.startFrom(1), commands.stop(), commands.black(), commands.reload(),
   ];
   for (const text of built) assert.ok(accepted.has(text), `${text} non è nei vettori validi`);
+});
+
+test('startFrom: dalla slide 1 è un avvio normale', () => {
+  assert.equal(commands.startFrom(1), 'start');
+  assert.equal(commands.startFrom(4), 'start:4');
+  assert.throws(() => commands.startFrom(0));
 });
 
 test('goTo rifiuta numeri non validi', () => {

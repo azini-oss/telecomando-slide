@@ -178,9 +178,21 @@ els.connectForm.addEventListener('submit', (event) => {
 els.demoBtn.addEventListener('click', () => connect('0000', { demo: true }));
 
 els.nextBtn.addEventListener('click', () => sendNav(commands.next()));
-els.prevBtn.addEventListener('click', () => sendNav(commands.prev()));
+els.prevBtn.addEventListener('click', () => {
+  hintIfAtStartSlide();
+  sendNav(commands.prev());
+});
 els.blackBtn.addEventListener('click', () => sendCommand(commands.black()));
 els.startBtn.addEventListener('click', () => sendCommand(commands.start()));
+els.startFromBtn.addEventListener('click', () => els.menu.showModal());
+
+/** Partita da una slide successiva: PowerPoint non torna indietro da solo, si spiega come fare. */
+function hintIfAtStartSlide() {
+  const show = model.protocol.show;
+  if (show?.running && show.from > 1 && show.slide === show.from) {
+    showToast(`Partita dalla slide ${show.from}: per tornare prima scegli la slide dal menu ⋯ (la presentazione si riavvia)`, 5000);
+  }
+}
 els.bannerBtn.addEventListener('click', () => transport?.connect());
 
 els.menuBtn.addEventListener('click', () => els.menu.showModal());
@@ -205,7 +217,9 @@ els.disconnectBtn.addEventListener('click', () => {
 els.slideList.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-slide]:not(:disabled)');
   if (!button) return;
-  sendCommand(commands.goTo(Number(button.dataset.slide)));
+  const slide = Number(button.dataset.slide);
+  // A presentazione ferma l'elenco sceglie da dove partire; avviata, salta alla slide.
+  sendCommand(model.protocol.show?.running ? commands.goTo(slide) : commands.startFrom(slide));
   els.menu.close();
 });
 

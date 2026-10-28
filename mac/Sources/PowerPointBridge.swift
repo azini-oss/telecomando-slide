@@ -10,6 +10,8 @@ enum BridgeError: Error, Equatable {
     case hiddenSlide
     case endOfShow
     case jumpFailed
+    case alreadyRunning
+    case beforeShowStart
     case timeout
     case script(String)
 
@@ -24,6 +26,8 @@ enum BridgeError: Error, Equatable {
         case .hiddenSlide: return "La slide è nascosta: in presentazione non ci si può andare"
         case .endOfShow: return "Raggiunta la fine della presentazione"
         case .jumpFailed: return "Salto alla slide non riuscito"
+        case .alreadyRunning: return "La presentazione è già avviata"
+        case .beforeShowStart: return "La presentazione è partita da una slide successiva"
         case .timeout: return "PowerPoint non risponde"
         case .script(let message): return "Errore PowerPoint: \(message)"
         }
@@ -36,7 +40,9 @@ protocol PresentationBridge: AnyObject {
     func readDeckInfo() -> Result<DeckInfo, BridgeError>
     func readSlides(from: Int, to: Int) -> Result<(key: String, slides: [SlideInfo]), BridgeError>
     func perform(_ command: Command) -> Result<Void, BridgeError>
-    func step(toward slide: Int, maxSteps: Int) -> Result<JumpProgress, BridgeError>
+    /// `restart`: chiude la presentazione in corso e la riavvia da `slide`.
+    func startShow(from slide: Int, restart: Bool) -> Result<Void, BridgeError>
+    func step(toward slide: Int, maxSteps: Int, stuck: Int) -> Result<JumpProgress, BridgeError>
 }
 
 /// Legge lo stato e comanda PowerPoint tramite AppleScript eseguito in-process.
@@ -80,11 +86,20 @@ final class PowerPointBridge: PresentationBridge {
         return call(handler).map { _ in () }
     }
 
-    func step(toward slide: Int, maxSteps: Int) -> Result<JumpProgress, BridgeError> {
+    func startShow(from slide: Int, restart: Bool) -> Result<Void, BridgeError> {
         guard isRunning else { return .failure(.notRunning) }
-        return call("steptoward", [Self.int(slide), Self.int(maxSteps)]).flatMap { d in
-            guard d.numberOfItems == 2 else { return .failure(.script("risposta inattesa al salto")) }
-            return .success(JumpProgress(slide: Int(d.atIndex(1)?.int32Value ?? 0), done: d.atIndex(2)?.booleanValue ?? false))
+        return call(restart ? "restartfrom" : "startfrom", [Self.int(slide)]).map { _ in () }
+    }
+
+    func step(toward slide: Int, maxSteps: Int, stuck: Int) -> Result<JumpProgress, BridgeError> {
+        guard isRunning else { return .failure(.notRunning) }
+        return call("steptoward", [Self.int(slide), Self.int(maxSteps), Self.int(stuck)]).flatMap { d in
+            guard d.numberOfItems == 3 else { return .failure(.script("risposta inattesa al salto")) }
+            return .success(JumpProgress(
+                slide: Int(d.atIndex(1)?.int32Value ?? 0),
+                done: d.atIndex(2)?.booleanValue ?? false,
+                stuck: Int(d.atIndex(3)?.int32Value ?? 0)
+            ))
         }
     }
 
@@ -98,7 +113,7 @@ final class PowerPointBridge: PresentationBridge {
         case .start: return "startshow"
         case .stop: return "endshow"
         case .black: return "toggleblack"
-        case .hello, .resume, .reload, .goTo: return nil
+        case .hello, .resume, .reload, .goTo, .startFrom: return nil
         }
     }
 
@@ -166,6 +181,8 @@ final class PowerPointBridge: PresentationBridge {
         case 1005: return .hiddenSlide
         case 1006: return .endOfShow
         case 1007: return .jumpFailed
+        case 1008: return .alreadyRunning
+        case 1009: return .beforeShowStart
         default: return .script(message)
         }
     }

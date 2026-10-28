@@ -39,10 +39,11 @@ enum SelfTest {
     }
 
     private static func jump(to slide: Int, _ bridge: PowerPointBridge) -> Result<Void, BridgeError> {
+        var stuck = 0
         for _ in 0..<Controller.Timing.maxJumpRounds {
-            switch bridge.step(toward: slide, maxSteps: Controller.Timing.jumpStepsPerRound) {
+            switch bridge.step(toward: slide, maxSteps: Controller.Timing.jumpStepsPerRound, stuck: stuck) {
             case .success(let progress) where progress.done: return .success(())
-            case .success: continue
+            case .success(let progress): stuck = progress.stuck
             case .failure(let error): return .failure(error)
             }
         }

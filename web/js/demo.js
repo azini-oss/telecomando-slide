@@ -28,7 +28,8 @@ const DECK = Object.freeze({
 
 export function createDemoTransport({ onBytes, onStatus }) {
   const encoder = new TextEncoder();
-  let show = Object.freeze({ running: false, slide: 0, build: 0, black: false, startedAt: 0 });
+  // from = slide di partenza (0 = dall'inizio): come in PowerPoint, prima di questa non si torna.
+  let show = Object.freeze({ running: false, slide: 0, build: 0, black: false, startedAt: 0, from: 0 });
   let connected = false;
 
   const emit = (message) => setTimeout(() => onBytes(encoder.encode(JSON.stringify(message))), 40);
@@ -36,6 +37,10 @@ export function createDemoTransport({ onBytes, onStatus }) {
     t: 'state', ppt: true, running: show.running, slide: show.slide, count: SLIDES.length, black: show.black,
     elapsed: show.running ? (Date.now() - show.startedAt) / 1000 : 0, key: KEY,
     slideId: show.slide > 0 ? slideId(show.slide) : 0,
+    from: show.running ? show.from : 0,
+  });
+  const startAt = (slide) => Object.freeze({
+    ...show, running: true, slide, build: 0, black: false, startedAt: Date.now(), from: slide > 1 ? slide : 0,
   });
 
   const visibleFrom = (index, step) => {
@@ -54,6 +59,7 @@ export function createDemoTransport({ onBytes, onStatus }) {
     },
     prev: () => {
       if (show.build > 0) return { ...show, build: show.build - 1 };
+      if (show.from > 1 && show.slide === show.from) return show;
       const target = visibleFrom(show.slide === 0 ? SLIDES.length + 1 : show.slide, -1);
       return target < 1 ? show : { ...show, slide: target, build: SLIDES[target - 1].builds };
     },
@@ -69,13 +75,18 @@ export function createDemoTransport({ onBytes, onStatus }) {
       emitState();
       return;
     }
+    const target = Number(text.split(':')[1]);
+    const hiddenTarget = SLIDES[target - 1]?.hidden;
     if (text === 'start') {
-      show = Object.freeze({ ...show, running: true, slide: 1, build: 0, startedAt: Date.now() });
+      show = startAt(1);
+    } else if (text.startsWith('start:') && !show.running) {
+      if (hiddenTarget) emit({ t: 'err', msg: 'La slide è nascosta: in presentazione non ci si può andare' });
+      else if (target >= 1 && target <= SLIDES.length) show = startAt(target);
     } else if (text === 'reload') {
       emit(DECK);
-    } else if (text.startsWith('goto:') && show.running) {
-      const target = Number(text.slice(5));
-      if (SLIDES[target - 1]?.hidden) emit({ t: 'err', msg: 'La slide è nascosta: in presentazione non ci si può andare' });
+    } else if ((text.startsWith('goto:') || text.startsWith('start:')) && show.running) {
+      if (hiddenTarget) emit({ t: 'err', msg: 'La slide è nascosta: in presentazione non ci si può andare' });
+      else if (show.from > 1 && target < show.from) show = startAt(target); // riavvio, come sul Mac
       else if (target >= 1 && target <= SLIDES.length) show = Object.freeze({ ...show, slide: target, build: 0 });
     } else if (moves[text] && show.running) {
       show = Object.freeze(moves[text]());
